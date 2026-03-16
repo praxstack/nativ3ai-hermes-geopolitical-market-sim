@@ -33,6 +33,11 @@ DEFAULT_PLATFORM = "parallel"
 DEFAULT_DAYS = 7
 DEFAULT_MAX_DEADLINE_DAYS = 31
 DEFAULT_PARALLEL_PROFILE_COUNT = 6
+DEFAULT_HEADLESS_MODULES = [
+    "news_rss",
+    "intelligence_risk_scores",
+    "military_usni",
+]
 
 THEATER_DEFAULTS = [
     "Persian Gulf",
@@ -145,6 +150,96 @@ def parse_json_list(value: Any) -> List[Any]:
     except json.JSONDecodeError:
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def parse_json_mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def parse_scalar(value: str) -> Any:
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def dedupe_strings(values: Iterable[Any]) -> List[str]:
+    output: List[str] = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
+
+
+def normalize_headless_modules(value: Any) -> List[str]:
+    if isinstance(value, str):
+        items = [part.strip() for part in value.split(",")]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    modules = dedupe_strings(items)
+    return modules or list(DEFAULT_HEADLESS_MODULES)
+
+
+def normalize_module_params(value: Any) -> Dict[str, Dict[str, Any]]:
+    source = parse_json_mapping(value) if isinstance(value, str) else value
+    if not isinstance(source, dict):
+        return {}
+    output: Dict[str, Dict[str, Any]] = {}
+    for module_name, payload in source.items():
+        name = str(module_name or "").strip()
+        if not name:
+            continue
+        if isinstance(payload, dict):
+            output[name] = payload
+    return output
+
+
+def parse_module_param_args(values: List[str]) -> Dict[str, Dict[str, Any]]:
+    output: Dict[str, Dict[str, Any]] = {}
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text or "=" not in text:
+            raise PipelineError(f"Invalid --module-param '{raw}'. Expected module.key=value or module={{...}}")
+        left, right = text.split("=", 1)
+        left = left.strip()
+        if "." in left:
+            module_name, key = left.split(".", 1)
+            module_name = module_name.strip()
+            key = key.strip()
+            if not module_name or not key:
+                raise PipelineError(f"Invalid --module-param '{raw}'. Expected module.key=value")
+            output.setdefault(module_name, {})[key] = parse_scalar(right)
+            continue
+        module_name = left
+        parsed = parse_json_mapping(right)
+        if not parsed:
+            raise PipelineError(f"Invalid --module-param '{raw}'. Expected module={{...}} when no key is provided")
+        output.setdefault(module_name, {}).update(parsed)
+    return output
+
+
+def compact_json(value: Any, limit: int = 800) -> str:
+    text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 16].rstrip() + "\n... truncated ..."
 
 
 def pct(value: Any) -> str:
@@ -299,17 +394,26 @@ def relevant_news_items(items: List[Dict[str, Any]], keywords: List[str]) -> Lis
     return filtered
 
 
-def fetch_news_snapshot(base_url: str, topic: str, days: int, keywords: List[str]) -> Dict[str, Any]:
+def fetch_news_snapshot(
+    base_url: str,
+    topic: str,
+    days: int,
+    keywords: List[str],
+    module_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     feeds = build_feed_urls(topic, days)
+    params = {
+        "urls": feeds,
+        "limit_per_feed": 25,
+        "max_total": 250,
+    }
+    if module_params:
+        params.update(module_params)
     url = build_headless_url(
         base_url,
         ["news_rss"],
         {
-            "news_rss": {
-                "urls": feeds,
-                "limit_per_feed": 25,
-                "max_total": 250,
-            }
+            "news_rss": params
         },
     )
     data = request_json("GET", url)
@@ -377,6 +481,17 @@ def fetch_risk_and_posture(base_url: str, region_codes: List[str], theater_regio
     result["usniArticleUrl"] = report.get("articleUrl", "")
     result["usniArticleTitle"] = report.get("articleTitle", "")
     return result
+
+
+def fetch_additional_modules(base_url: str, modules: List[str], module_params: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    names = dedupe_strings(modules)
+    if not names:
+        return {}
+    params = {name: module_params.get(name, {}) for name in names if module_params.get(name)}
+    url = build_headless_url(base_url, names, params)
+    data = request_json("GET", url)
+    payload = data.get("modules")
+    return payload if isinstance(payload, dict) else {}
 
 
 def topic_match_score(text: str, terms: List[str]) -> float:
@@ -571,7 +686,19 @@ def generate_simulation_requirement(topic: str, primary_market: Dict[str, Any]) 
     )
 
 
-def build_seed_markdown(topic_id: str, topic: str, query: str, keywords: List[str], markets: List[Dict[str, Any]], news: Dict[str, Any], context: Dict[str, Any], generated_at: str, base_url: str) -> str:
+def build_seed_markdown(
+    topic_id: str,
+    topic: str,
+    query: str,
+    keywords: List[str],
+    markets: List[Dict[str, Any]],
+    news: Dict[str, Any],
+    context: Dict[str, Any],
+    extra_modules: Dict[str, Any],
+    generated_at: str,
+    base_url: str,
+    headless_modules: List[str],
+) -> str:
     primary_market = markets[0]
     related_markets = markets[1:]
     lines: List[str] = []
@@ -581,6 +708,7 @@ def build_seed_markdown(topic_id: str, topic: str, query: str, keywords: List[st
     lines.append(f"Tracked topic id: {topic_id}")
     lines.append(f"Market query: {query}")
     lines.append(f"WorldOSINT base: {base_url}")
+    lines.append(f"Configured WorldOSINT modules: {', '.join(headless_modules)}")
     lines.append("")
     lines.append("## Primary contract")
     lines.append("")
@@ -642,6 +770,20 @@ def build_seed_markdown(topic_id: str, topic: str, query: str, keywords: List[st
         lines.append(f"- {asset.get('name')} ({asset.get('hullNumber') or 'n/a'}, {asset.get('type')}) in {asset.get('region')}, status={asset.get('status')}")
     if context.get("theaterAssets"):
         lines.append("")
+    if extra_modules:
+        lines.append("## Additional WorldOSINT module snapshots")
+        lines.append("")
+        for module_name, payload in list(extra_modules.items())[:8]:
+            data = payload.get("data") if isinstance(payload, dict) else payload
+            keys = list(data.keys())[:8] if isinstance(data, dict) else []
+            lines.append(f"### {module_name}")
+            lines.append("")
+            if keys:
+                lines.append(f"- Top-level keys: {', '.join(keys)}")
+            lines.append("```json")
+            lines.append(compact_json(data, limit=1000))
+            lines.append("```")
+            lines.append("")
     lines.append("## Recent headlines")
     lines.append("")
     for item in news["items"][:20]:
@@ -667,6 +809,8 @@ def build_seed_markdown(topic_id: str, topic: str, query: str, keywords: List[st
     lines.append("")
     lines.append("- RSS feeds were fetched through the local WorldOSINT headless `news_rss` module.")
     lines.append("- Risk scores and naval posture came from WorldOSINT headless `intelligence_risk_scores` and `military_usni` modules.")
+    if extra_modules:
+        lines.append(f"- Additional WorldOSINT modules included: {', '.join(extra_modules.keys())}.")
     lines.append("- Market metadata came from Polymarket Gamma API; top-of-book pricing came from the CLOB book endpoint where available.")
     lines.append("")
     lines.append("Reference URLs:")
@@ -963,6 +1107,8 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
     use_llm_for_profiles = bool(config.get("use_llm_for_profiles", False))
     parallel_profile_count = int(config.get("parallel_profile_count") or DEFAULT_PARALLEL_PROFILE_COUNT)
     enable_graph_memory_update = bool(config.get("enable_graph_memory_update", False))
+    headless_modules = normalize_headless_modules(config.get("headless_modules"))
+    module_params = normalize_module_params(config.get("module_params"))
 
     timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
     run_dir = DATA_DIR / "runs" / topic_id / timestamp
@@ -976,14 +1122,36 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
         raise PipelineError(f"MiroFish backend is unavailable: {mirofish_status}")
 
     markets = select_markets(market_query, max_deadline_days)
-    news = fetch_news_snapshot(worldosint_base, topic, days, keywords)
-    try:
-        context = fetch_risk_and_posture(worldosint_base, region_codes, theater_regions)
-    except Exception as exc:
-        context = {"riskRows": [], "usniArticleUrl": "", "usniArticleTitle": "", "theaterAssets": [], "warning": str(exc)}
+    news = {"feeds": [], "items": [], "themes": [], "actors": []}
+    if "news_rss" in headless_modules:
+        news = fetch_news_snapshot(worldosint_base, topic, days, keywords, module_params.get("news_rss"))
+    context = {"riskRows": [], "usniArticleUrl": "", "usniArticleTitle": "", "theaterAssets": []}
+    if "intelligence_risk_scores" in headless_modules or "military_usni" in headless_modules:
+        try:
+            context = fetch_risk_and_posture(worldosint_base, region_codes, theater_regions)
+        except Exception as exc:
+            context = {"riskRows": [], "usniArticleUrl": "", "usniArticleTitle": "", "theaterAssets": [], "warning": str(exc)}
+    built_in_modules = {"news_rss", "intelligence_risk_scores", "military_usni"}
+    extra_modules = fetch_additional_modules(
+        worldosint_base,
+        [name for name in headless_modules if name not in built_in_modules],
+        module_params,
+    )
 
     generated_at = iso_now()
-    seed_markdown = build_seed_markdown(topic_id, topic, market_query, keywords, markets, news, context, generated_at, worldosint_base)
+    seed_markdown = build_seed_markdown(
+        topic_id,
+        topic,
+        market_query,
+        keywords,
+        markets,
+        news,
+        context,
+        extra_modules,
+        generated_at,
+        worldosint_base,
+        headless_modules,
+    )
     seed_path = run_dir / f"{topic_id}_seed.md"
     snapshot_path = run_dir / f"{topic_id}_snapshot.json"
     seed_path.write_text(seed_markdown, encoding="utf-8")
@@ -994,11 +1162,14 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
         "topic": topic,
         "market_query": market_query,
         "keywords": keywords,
+        "headless_modules": headless_modules,
+        "module_params": module_params,
         "worldosint_base_url": worldosint_base,
         "mirofish_base_url": mirofish_base,
         "markets": markets,
         "news": news,
         "context": context,
+        "extra_modules": extra_modules,
         "seed_path": str(seed_path),
         "simulate": simulate,
     }
@@ -1044,6 +1215,7 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
     summary_lines.append(f"- Bid / ask: {pct(markets[0]['bestBid'])} / {pct(markets[0]['bestAsk'])}")
     summary_lines.append(f"- Deadline: {short_dt(markets[0]['endDate'])}")
     summary_lines.append(f"- URL: {markets[0]['url']}")
+    summary_lines.append(f"- WorldOSINT modules: {', '.join(headless_modules)}")
     summary_lines.append("")
     summary_lines.append("## Artifacts")
     summary_lines.append("")
@@ -1083,6 +1255,8 @@ def cmd_track_topic(args: argparse.Namespace) -> int:
         "keywords": args.keyword or tokenize_terms(args.topic, args.market_query or args.topic),
         "region_codes": args.region_code or [],
         "theater_regions": args.theater_region or THEATER_DEFAULTS,
+        "headless_modules": normalize_headless_modules(args.headless_module),
+        "module_params": parse_module_param_args(args.module_param),
         "days": args.days,
         "max_deadline_days": args.max_deadline_days,
         "worldosint_base_url": args.worldosint_base_url,
@@ -1126,6 +1300,8 @@ def topic_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         "keywords": args.keyword or tokenize_terms(args.topic, args.market_query or args.topic),
         "region_codes": args.region_code or [],
         "theater_regions": args.theater_region or THEATER_DEFAULTS,
+        "headless_modules": normalize_headless_modules(args.headless_module),
+        "module_params": parse_module_param_args(args.module_param),
         "days": args.days,
         "max_deadline_days": args.max_deadline_days,
         "worldosint_base_url": args.worldosint_base_url,
@@ -1171,6 +1347,18 @@ def build_parser() -> argparse.ArgumentParser:
         "parallel_profile_count": DEFAULT_PARALLEL_PROFILE_COUNT,
     }
 
+    def add_topic_config_args(target: argparse.ArgumentParser) -> None:
+        target.add_argument("--market-query", default="")
+        target.add_argument("--keyword", action="append", default=[])
+        target.add_argument("--region-code", action="append", default=[])
+        target.add_argument("--theater-region", action="append", default=[])
+        target.add_argument("--headless-module", action="append", default=[])
+        target.add_argument("--module-param", action="append", default=[])
+        for key, value in common_defaults.items():
+            target.add_argument(f"--{key.replace('_', '-')}", default=value, type=type(value) if not isinstance(value, str) else str)
+        target.add_argument("--use-llm-for-profiles", action="store_true")
+        target.add_argument("--enable-graph-memory-update", action="store_true")
+
     health = subparsers.add_parser("health", help="Check WorldOSINT and MiroFish availability")
     health.add_argument("--worldosint-base-url", default=DEFAULT_WORLDOSINT_BASE)
     health.add_argument("--mirofish-base-url", default=DEFAULT_MIROFISH_BASE)
@@ -1180,14 +1368,7 @@ def build_parser() -> argparse.ArgumentParser:
     track = subparsers.add_parser("track-topic", help="Persist a tracked topic configuration")
     track.add_argument("--topic-id", default="")
     track.add_argument("--topic", required=True)
-    track.add_argument("--market-query", default="")
-    track.add_argument("--keyword", action="append", default=[])
-    track.add_argument("--region-code", action="append", default=[])
-    track.add_argument("--theater-region", action="append", default=[])
-    for key, value in common_defaults.items():
-        track.add_argument(f"--{key.replace('_', '-')}", default=value, type=type(value) if not isinstance(value, str) else str)
-    track.add_argument("--use-llm-for-profiles", action="store_true")
-    track.add_argument("--enable-graph-memory-update", action="store_true")
+    add_topic_config_args(track)
     track.set_defaults(func=cmd_track_topic)
 
     list_topics = subparsers.add_parser("list-topics", help="Show tracked topics")
@@ -1201,14 +1382,7 @@ def build_parser() -> argparse.ArgumentParser:
         if not tracked:
             run_parser.add_argument("--topic-id", default="")
             run_parser.add_argument("--topic", required=True)
-            run_parser.add_argument("--market-query", default="")
-            run_parser.add_argument("--keyword", action="append", default=[])
-            run_parser.add_argument("--region-code", action="append", default=[])
-            run_parser.add_argument("--theater-region", action="append", default=[])
-            for key, value in common_defaults.items():
-                run_parser.add_argument(f"--{key.replace('_', '-')}", default=value, type=type(value) if not isinstance(value, str) else str)
-            run_parser.add_argument("--use-llm-for-profiles", action="store_true")
-            run_parser.add_argument("--enable-graph-memory-update", action="store_true")
+            add_topic_config_args(run_parser)
         else:
             run_parser.add_argument("topic_id")
         run_parser.add_argument("--simulate", action="store_true")

@@ -14,9 +14,12 @@ Helper script path:
 
 - stores tracked geopolitical topics in `~/.hermes/data/geopolitical-market-sim/topics.json`
 - fetches topic-relevant RSS/news from local WorldOSINT headless modules
+- can attach topic-specific WorldOSINT module sets and module params
 - searches open Polymarket markets, prefers near-deadline contracts, and pulls top-of-book pricing
 - writes a MiroFish-ready seed packet and raw snapshot under `~/.hermes/data/geopolitical-market-sim/runs/...`
 - optionally drives the full MiroFish API pipeline with moderate defaults
+
+Treat Iran as an example, not a built-in assumption. This skill is meant for reusable tracked topics.
 
 ## Default operating mode
 
@@ -38,6 +41,35 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 If `MiroFish` is down, do not claim the simulation ran. If `WorldOSINT` is down, do not claim the packet is current.
 
 ## Track a topic
+
+Decide these fields up front:
+- `topic_id`: stable slug for scheduling and retrieval
+- `topic`: the event class or forecast theme
+- `market_query`: what to search on Polymarket
+- `keyword`: terms that should survive RSS filtering
+- `headless_module`: which WorldOSINT modules matter for this topic
+- `module_param`: optional per-module overrides
+
+If the user does not specify modules, use:
+- `news_rss`
+- `intelligence_risk_scores`
+- `military_usni`
+
+Generic pattern:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  track-topic \
+  --topic-id <topic-id> \
+  --topic "<topic>" \
+  --market-query "<market query>" \
+  --keyword <term1> --keyword <term2> \
+  --headless-module news_rss
+```
+
+Custom module params use either:
+- `--module-param 'news_rss.max_total=120'`
+- `--module-param 'news_rss={\"max_total\":120,\"limit_per_feed\":15}'`
 
 ```bash
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
@@ -64,6 +96,8 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
   --simulate
 ```
 
+Use `run-topic` for one-off questions and `track-topic` plus `run-tracked` for scheduled workflows.
+
 ## Run a tracked topic
 
 Seed packet only:
@@ -79,6 +113,13 @@ Seed packet plus MiroFish simulation:
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
   run-tracked iran-conflict \
   --simulate
+```
+
+## Manage tracked topics
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py list-topics
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py untrack-topic <topic-id>
 ```
 
 ## How to use the output
@@ -106,3 +147,6 @@ Good cron prompt pattern:
 
 Example job intent:
 - "Run the tracked topic `iran-conflict`. If the simulation succeeds, read the generated summaries and give a final YES/NO call for the primary market with 3-5 reasons. Mention the artifact paths."
+- "Run the tracked topic `<topic-id>`. Read the newest `run_summary.md` and `simulation_summary.md`. Return the primary market, current bid/ask, directional call, why the simulation leans that way, and the artifact paths."
+
+Use one tracked topic per cron job. That keeps scheduling clean, lets Hermes answer about each topic independently, and avoids mixing different market resolution criteria in one run.
