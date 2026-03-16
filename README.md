@@ -138,6 +138,11 @@ Important:
 - this is a new branch simulation, not a replay of the historical run
 - the capability depends on the counterfactual-capable `nativ3ai/MiroFish` fork
 
+UI workbench notes:
+- use `http://127.0.0.1:3001/simulation/<branch_simulation_id>/counterfactual` to inspect an existing counterfactual branch in the browser
+- `/simulation/<branch_simulation_id>/start` remains the live execution route and will start or restart the branch
+- the counterfactual workbench combines a read-only Step 3 dashboard, round scrubber, branch/base event feeds, and a relationship timeline for injected-actor impact
+
 To inspect the current WorldOSINT headless catalog on your own deployment:
 
 ```bash

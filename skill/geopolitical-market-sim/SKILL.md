@@ -250,6 +250,9 @@ When answering the user:
 - state the injected actor, stance, and injection round
 - avoid claiming the branch is a replay of history; it is a new simulation seeded from the old one
 - if the endpoint is unavailable, say the local MiroFish backend needs the counterfactual-capable fork
+- if the user wants browser inspection of an existing branch, send them to `/simulation/<branch_simulation_id>/counterfactual`
+- do not send archived branch inspection to `/simulation/<branch_simulation_id>/start`; that route is for live execution and can restart the branch
+- mention that the counterfactual workbench exposes round scrubbing, branch/base diff feeds, and injected-actor relationship timelines
 
 ## Cron usage
 
