@@ -50,8 +50,8 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket selection -> seed pack
 
 - WorldOSINT headless: https://github.com/nativ3ai/worldosint-headless
 - MiroFish fork used for this workflow: https://github.com/nativ3ai/MiroFish
-- MiroFish upstream: https://github.com/666ghj/MiroFish
-- Related MiroFish PR context: https://github.com/666ghj/MiroFish/pull/204
+
+This skill is documented and validated against the `nativ3ai` repos above.
 
 ## 1) Start WorldOSINT
 
