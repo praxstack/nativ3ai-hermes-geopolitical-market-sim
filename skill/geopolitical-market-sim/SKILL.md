@@ -253,6 +253,9 @@ When answering the user:
 - if the user wants browser inspection of an existing branch, send them to `/simulation/<branch_simulation_id>/counterfactual`
 - do not send archived branch inspection to `/simulation/<branch_simulation_id>/start`; that route is for live execution and can restart the branch
 - mention that the counterfactual workbench exposes round scrubbing, branch/base diff feeds, and injected-actor relationship timelines
+- if asked to create any artifact, verify it exists before claiming success
+- for files use `test -f` or `stat`; for media also use `ffprobe` and report duration/size
+- if verification fails, say the artifact was not produced instead of summarizing an imaginary result
 
 ## Cron usage
 

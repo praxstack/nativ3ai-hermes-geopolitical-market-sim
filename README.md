@@ -143,6 +143,11 @@ UI workbench notes:
 - `/simulation/<branch_simulation_id>/start` remains the live execution route and will start or restart the branch
 - the counterfactual workbench combines a read-only Step 3 dashboard, round scrubber, branch/base event feeds, and a relationship timeline for injected-actor impact
 
+Artifact verification rule:
+- do not claim a file, image, report, or video was created unless it is verified on disk
+- verify artifacts with `test -f` or `stat` and report the real path
+- for media outputs, also run `ffprobe` and report duration and size before saying the job succeeded
+
 To inspect the current WorldOSINT headless catalog on your own deployment:
 
 ```bash
