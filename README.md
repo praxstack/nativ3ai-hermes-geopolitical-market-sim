@@ -26,6 +26,71 @@ The pipeline is not Iran-specific. A tracked topic can represent:
 - a ceasefire or nuclear-deal question
 - a shipping, energy, cyber, or aviation disruption market
 
+## Counterfactual Branching
+
+PrediHermes can also drive the MiroFish counterfactual branch flow headlessly.
+
+That means Hermes can:
+- pick an existing historical `simulation_id`
+- inject a new actor with a chosen role, stance, persona, and active-hours profile
+- choose the exact `injection_round`
+- optionally give that actor an opening statement at insertion time
+- launch the branch as a new MiroFish simulation and compare it against the base run
+
+This is intended for questions like:
+- "What if a serious mediator appeared in round 12?"
+- "How would a hawkish government spokesperson change the discourse?"
+- "What if a market-native analyst account entered midway through the cycle?"
+
+Headless API flow:
+
+```bash
+curl -X POST http://127.0.0.1:5001/api/simulation/<base_simulation_id>/counterfactual \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "actor": {
+      "name": "Swiss backchannel envoy",
+      "entity_type": "Diplomat",
+      "profession": "Diplomat",
+      "country": "Switzerland",
+      "stance": "mediator",
+      "bio": "Quiet envoy coordinating verification-first diplomacy.",
+      "persona": "Prioritizes de-escalation, inspection sequencing, and face-saving language for both sides.",
+      "interested_topics": ["backchannel diplomacy", "IAEA inspections", "sanctions relief"],
+      "activity_level": 0.55,
+      "influence_weight": 3.4,
+      "posts_per_hour": 1.2,
+      "comments_per_hour": 0.9,
+      "active_hours": [8,9,10,11,12,13,14,15,16,17,18]
+    },
+    "injection_round": 12,
+    "opening_statement": "Swiss channel update: verification-first sequencing is the only viable path."
+  }'
+```
+
+Then start the returned branch:
+
+```bash
+curl -X POST http://127.0.0.1:5001/api/simulation/start \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "simulation_id": "<new_simulation_id>",
+    "platform": "parallel",
+    "force": true,
+    "enable_graph_memory_update": true
+  }'
+```
+
+Monitor like any other MiroFish run:
+- `GET /api/simulation/<id>/run-status`
+- `GET /api/simulation/<id>/run-status/detail`
+- `GET /api/simulation/<id>/timeline`
+- `GET /api/simulation/<id>/actions?round_num=<n>`
+
+Important:
+- this is a new branch simulation, not a replay of the historical run
+- the capability depends on the counterfactual-capable `nativ3ai/MiroFish` fork
+
 To inspect the current WorldOSINT headless catalog on your own deployment:
 
 ```bash

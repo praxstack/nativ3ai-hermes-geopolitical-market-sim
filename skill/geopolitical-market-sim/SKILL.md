@@ -135,6 +135,77 @@ After a run:
 
 Do not invent exact resolution criteria if the market description is vague. Say when the market page needs manual verification.
 
+## Counterfactual actor injection
+
+If the user wants to test how a new actor would change a past simulation, use the MiroFish backend headlessly. Do not require the UI.
+
+Prerequisites:
+- MiroFish backend must be running on `MIROFISH_BASE_URL` and should expose `POST /api/simulation/<base_simulation_id>/counterfactual`
+- the base simulation must already exist
+
+Workflow:
+1. choose the historical `simulation_id`
+2. create a counterfactual branch by posting actor data plus `injection_round`
+3. read the returned branch `simulation_id`
+4. start the new branch with the normal `/api/simulation/start` call
+5. poll `run-status`, `run-status/detail`, `timeline`, and `actions` like any other simulation
+
+Recommended use:
+- inject one actor at a time
+- choose the injection round from a historically important or high-action round
+- provide an `opening_statement` only if the user explicitly wants the actor to announce itself at insertion time
+
+Example branch creation:
+
+```bash
+curl -X POST http://127.0.0.1:5001/api/simulation/<base_simulation_id>/counterfactual \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "actor": {
+      "name": "Swiss backchannel envoy",
+      "entity_type": "Diplomat",
+      "profession": "Diplomat",
+      "country": "Switzerland",
+      "stance": "mediator",
+      "bio": "Quiet envoy coordinating verification-first diplomacy.",
+      "persona": "Prioritizes de-escalation, inspection sequencing, and face-saving language for both sides.",
+      "interested_topics": ["backchannel diplomacy", "IAEA inspections", "sanctions relief"],
+      "activity_level": 0.55,
+      "influence_weight": 3.4,
+      "posts_per_hour": 1.2,
+      "comments_per_hour": 0.9,
+      "active_hours": [8,9,10,11,12,13,14,15,16,17,18]
+    },
+    "injection_round": 12,
+    "opening_statement": "Swiss channel update: verification-first sequencing is the only viable path."
+  }'
+```
+
+Then start it:
+
+```bash
+curl -X POST http://127.0.0.1:5001/api/simulation/start \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "simulation_id": "<new_simulation_id>",
+    "platform": "parallel",
+    "force": true,
+    "enable_graph_memory_update": true
+  }'
+```
+
+Monitoring endpoints:
+- `GET /api/simulation/<id>/run-status`
+- `GET /api/simulation/<id>/run-status/detail`
+- `GET /api/simulation/<id>/timeline`
+- `GET /api/simulation/<id>/actions?round_num=<n>`
+
+When answering the user:
+- clearly separate the base run from the counterfactual branch
+- state the injected actor, stance, and injection round
+- avoid claiming the branch is a replay of history; it is a new simulation seeded from the old one
+- if the endpoint is unavailable, say the local MiroFish backend needs the counterfactual-capable fork
+
 ## Cron usage
 
 Attach this skill to the Hermes cron job and make the prompt explicit. Keep the prompt self-contained.
