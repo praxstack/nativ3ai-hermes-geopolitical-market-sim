@@ -1,12 +1,13 @@
-# Hermes Geopolitical Market Sim
+# PrediHermes
 
-Plug-and-play Hermes skill for geopolitical prediction workflows.
+PrediHermes is a plug-and-play Hermes skill for geopolitical prediction workflows.
 
 It combines:
 - WorldOSINT headless modules for OSINT snapshots, RSS monitoring, and topic-specific signals
 - Polymarket Gamma/CLOB for open market selection and live yes bid/ask data
 - MiroFish for graph-backed social simulation
 - Hermes cron jobs for scheduled recurring forecasts
+- optional `launchd` helpers for local macOS deployment
 
 ## What it does
 
@@ -138,7 +139,55 @@ At that point the default local wiring is:
 - MiroFish API: `http://127.0.0.1:5001`
 - Hermes skill data: `~/.hermes/data/geopolitical-market-sim`
 
-This repo does not currently install `launchd` services for those dependencies. Run them directly or use your own process manager.
+### 4. Optional `launchd` Add-On
+
+PrediHermes now ships an optional `launchd` installer for macOS. It is not forced.
+
+Manual service install:
+
+```bash
+./launchd/install_launchd.sh \
+  --worldosint-root /absolute/path/to/worldosint-headless \
+  --mirofish-root /absolute/path/to/MiroFish
+```
+
+One-shot install plus services:
+
+```bash
+./install.sh --with-launchd \
+  --worldosint-root /absolute/path/to/worldosint-headless \
+  --mirofish-root /absolute/path/to/MiroFish
+```
+
+What it installs:
+- `com.predihermes.worldosint`
+- `com.predihermes.worldosint-ws`
+- `com.predihermes.mirofish-backend`
+
+The WebSocket bridge is optional. Skip it with:
+
+```bash
+./launchd/install_launchd.sh \
+  --worldosint-root /absolute/path/to/worldosint-headless \
+  --mirofish-root /absolute/path/to/MiroFish \
+  --skip-worldosint-ws
+```
+
+Useful checks:
+
+```bash
+launchctl list | grep predihermes
+tail -f ~/Library/Logs/predihermes/worldosint.out.log
+tail -f ~/Library/Logs/predihermes/mirofish-backend.out.log
+```
+
+Remove the agents:
+
+```bash
+./launchd/uninstall_launchd.sh
+```
+
+You can still run everything manually if you do not want `launchd`.
 
 ## Install
 
@@ -152,6 +201,14 @@ This copies the skill to:
 - `~/.hermes/skills/research/geopolitical-market-sim`
 
 It also installs the Python dependency used by the helper script.
+
+Optional service install:
+
+```bash
+./install.sh --with-launchd \
+  --worldosint-root /absolute/path/to/worldosint-headless \
+  --mirofish-root /absolute/path/to/MiroFish
+```
 
 ## Health Check
 
@@ -359,3 +416,5 @@ No API keys are stored in this repo. Configure provider keys through your normal
 - `skill/geopolitical-market-sim/agents/openai.yaml`
 - `skill/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py`
 - `install.sh`
+- `launchd/install_launchd.sh`
+- `launchd/uninstall_launchd.sh`
