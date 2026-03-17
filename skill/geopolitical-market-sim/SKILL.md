@@ -12,6 +12,11 @@ Use this skill for the local WorldOSINT -> Polymarket -> MiroFish workflow.
 Helper script path:
 `~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py`
 
+Command policy:
+- Prefer `predihermes <command> ...` if available on PATH.
+- Fallback to `python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py <command> ...`.
+- Do not stop after one failed shorthand attempt; retry with the full script path.
+
 ## What it does
 
 - stores tracked geopolitical topics in `~/.hermes/data/geopolitical-market-sim/topics.json`
@@ -117,12 +122,86 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
   --simulate
 ```
 
+Before expensive runs, generate a plan and validate collected feeds:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  plan-tracked iran-conflict \
+  --budget-usd 1.2
+```
+
+The plan output includes:
+- `feed_quality` (`good` / `moderate` / `poor`) with notes
+- `simulation_plan` with selected rounds/profile parallelism and rationale
+
+If the user wants strict safety before simulation, require feed confirmation:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  run-tracked iran-conflict \
+  --simulate \
+  --require-feed-confirmation
+```
+
 ## Manage tracked topics
 
 ```bash
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py list-topics
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py untrack-topic <topic-id>
 ```
+
+## Modular control for tracked topics
+
+List available WorldOSINT modules first:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py list-worldosint-modules
+```
+
+Use `update-topic` to change modules and execution behavior without recreating the topic:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  update-topic iran-conflict \
+  --add-headless-module military_naval \
+  --set-module-param 'news_rss.max_total=160' \
+  --set-platform parallel \
+  --set-max-rounds 36
+```
+
+Useful modular flags:
+- `--set-headless-module <module>` (repeatable): replace module set
+- `--add-headless-module <module>` and `--remove-headless-module <module>`
+- shorthand aliases also work: `--set-module`, `--add-module`, `--remove-module`
+- `--set-module-param 'module.key=value'`
+- `--remove-module-param module.key` or `--remove-module-param module`
+- `--set-platform twitter|reddit|parallel`
+- `--set-max-rounds <n>`
+- `--set-simulation-mode auto|manual`
+- `--set-budget-usd <usd>`
+- `--set-target-agents <n>` (agent-count hint used for planning profile depth)
+
+Per-run overrides:
+- `--simulation-mode auto|manual`
+- `--budget-usd <usd>`
+- `--target-rounds <n>`
+- `--target-profile-count <n>`
+- `--target-agents <n>`
+- `--require-feed-confirmation`
+
+Natural Hermes ask patterns for module control:
+- "Use PrediHermes list-worldosint-modules and propose the best modules for Hormuz risk."
+- "Use PrediHermes update-topic iran-conflict and add <module>, remove <module>, then show dashboard."
+- "Use PrediHermes plan-tracked iran-conflict with budget 1.0 and confirm if feed quality is good enough."
+- "Use PrediHermes run-tracked iran-conflict in manual mode with 36 rounds and profile count 9."
+
+Simulation planning behavior:
+- If user gives explicit rounds/profile/agents, run in manual mode and follow those values.
+- If user asks the agent to decide, use auto mode with budget plus feed quality.
+- If user gives neither, ask concise clarifiers:
+  - budget range
+  - manual vs auto mode
+  - optional agent-count target
 
 ## How to use the output
 
@@ -134,6 +213,27 @@ After a run:
   - current market price / bid-ask
 - simulation-derived directional view
 - what evidence would change the call
+
+## Hermes CLI dashboard and command awareness
+
+PrediHermes can print a terminal-native ASCII dashboard so users see pipeline status directly in Hermes:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py dashboard --topic-id iran-conflict
+```
+
+This dashboard shows:
+- primary market bid/ask/deadline
+- OSINT signal counts (headlines, theme, risk summary, modules)
+- simulation status/action totals when simulation artifacts exist
+
+To show command awareness/help for users inside Hermes:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py command-catalog
+```
+
+When responding in Hermes, if a user asks “what can PrediHermes do next?”, use `command-catalog` and then suggest 1-2 relevant next commands.
 
 Do not invent exact resolution criteria if the market description is vague. Say when the market page needs manual verification.
 
@@ -250,9 +350,6 @@ When answering the user:
 - state the injected actor, stance, and injection round
 - avoid claiming the branch is a replay of history; it is a new simulation seeded from the old one
 - if the endpoint is unavailable, say the local MiroFish backend needs the counterfactual-capable fork
-- if the user wants browser inspection of an existing branch, send them to `/simulation/<branch_simulation_id>/counterfactual`
-- do not send archived branch inspection to `/simulation/<branch_simulation_id>/start`; that route is for live execution and can restart the branch
-- mention that the counterfactual workbench exposes round scrubbing, branch/base diff feeds, and injected-actor relationship timelines
 - if asked to create any artifact, verify it exists before claiming success
 - for files use `test -f` or `stat`; for media also use `ffprobe` and report duration/size
 - if verification fails, say the artifact was not produced instead of summarizing an imaginary result

@@ -48,11 +48,14 @@ DEFAULT_PLATFORM = "parallel"
 DEFAULT_DAYS = 7
 DEFAULT_MAX_DEADLINE_DAYS = 31
 DEFAULT_PARALLEL_PROFILE_COUNT = 6
+DEFAULT_SIMULATION_MODE = "auto"
+DEFAULT_BUDGET_USD = 1.0
 DEFAULT_HEADLESS_MODULES = [
     "news_rss",
     "intelligence_risk_scores",
     "military_usni",
 ]
+DEFAULT_CONSOLE_WIDTH = 92
 
 THEATER_DEFAULTS = [
     "Persian Gulf",
@@ -310,6 +313,35 @@ def human_money(value: Any) -> str:
     return f"${number:.0f}"
 
 
+def short_text(value: Any, limit: int) -> str:
+    if value is None:
+        text = ""
+    else:
+        text = re.sub(r"\s+", " ", str(value).strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def format_kv(label: str, value: Any, width: int) -> str:
+    head = f"{label}: "
+    max_value_len = max(width - len(head), 8)
+    return head + short_text(value, max_value_len)
+
+
+def ascii_box(title: str, lines: List[str], width: int = DEFAULT_CONSOLE_WIDTH) -> str:
+    safe_width = max(width, 56)
+    inner = safe_width - 4
+    top = "+" + "-" * (safe_width - 2) + "+"
+    title_line = "| " + short_text(title, inner).ljust(inner) + " |"
+    body_lines = []
+    for line in lines:
+        body_lines.append("| " + short_text(line, inner).ljust(inner) + " |")
+    if not body_lines:
+        body_lines.append("| " + "".ljust(inner) + " |")
+    return "\n".join([top, title_line, top, *body_lines, top])
+
+
 def tokenize_terms(*parts: str) -> List[str]:
     tokens: List[str] = []
     seen = set()
@@ -320,6 +352,172 @@ def tokenize_terms(*parts: str) -> List[str]:
             seen.add(token)
             tokens.append(token)
     return tokens
+
+
+def clamp_int(value: int, low: int, high: int) -> int:
+    return max(low, min(high, int(value)))
+
+
+def assess_feed_quality(
+    news: Dict[str, Any],
+    context: Dict[str, Any],
+    headless_modules: List[str],
+    extra_modules: Dict[str, Any],
+) -> Dict[str, Any]:
+    items = news.get("items") or []
+    themes = news.get("themes") or []
+    risk_rows = context.get("riskRows") or []
+    module_count = len(set((headless_modules or []) + list((extra_modules or {}).keys())))
+    recent_count = 0
+    for item in items[:80]:
+        dt = to_date(item.get("pubDateIso") or item.get("pubDate"))
+        if dt and (now_utc() - dt).total_seconds() <= 72 * 3600:
+            recent_count += 1
+
+    score = 0
+    notes: List[str] = []
+    if len(items) >= 20:
+        score += 30
+    elif len(items) >= 10:
+        score += 20
+        notes.append("headline sample is thin; consider widening keywords or days")
+    else:
+        score += 10
+        notes.append("headline sample is weak")
+
+    if recent_count >= 8:
+        score += 20
+    elif recent_count >= 3:
+        score += 12
+        notes.append("few recent headlines in last 72h")
+    else:
+        notes.append("insufficient recent headline freshness")
+
+    if len(themes) >= 3:
+        score += 20
+    elif len(themes) >= 1:
+        score += 12
+        notes.append("theme diversity is limited")
+
+    if risk_rows:
+        score += 15
+    else:
+        notes.append("risk score module returned no rows")
+
+    if module_count >= 3:
+        score += 15
+    elif module_count == 2:
+        score += 10
+    else:
+        score += 5
+        notes.append("too few modules selected for robust monitoring")
+
+    if score >= 75:
+        status = "good"
+    elif score >= 50:
+        status = "moderate"
+    else:
+        status = "poor"
+
+    if recent_count == 0 and status == "good":
+        status = "moderate"
+        notes.append("no recent items in last 72h; downgraded from good")
+
+    return {
+        "status": status,
+        "score": score,
+        "headline_count": len(items),
+        "recent_headline_count_72h": recent_count,
+        "theme_count": len(themes),
+        "risk_row_count": len(risk_rows),
+        "module_count": module_count,
+        "notes": notes,
+    }
+
+
+def select_simulation_plan(
+    config: Dict[str, Any],
+    feed_quality: Dict[str, Any],
+    runtime_overrides: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    runtime_overrides = runtime_overrides or {}
+    mode = str(runtime_overrides.get("simulation_mode") or config.get("simulation_mode") or DEFAULT_SIMULATION_MODE).strip().lower()
+    if mode not in {"auto", "manual"}:
+        mode = DEFAULT_SIMULATION_MODE
+
+    budget = runtime_overrides.get("budget_usd")
+    if budget is None:
+        budget = config.get("budget_usd", DEFAULT_BUDGET_USD)
+    try:
+        budget = max(0.0, float(budget))
+    except (TypeError, ValueError):
+        budget = DEFAULT_BUDGET_USD
+
+    manual_rounds = runtime_overrides.get("target_rounds")
+    if manual_rounds is None:
+        manual_rounds = config.get("max_rounds", DEFAULT_MAX_ROUNDS)
+    manual_profiles = runtime_overrides.get("target_profile_count")
+    if manual_profiles is None:
+        manual_profiles = config.get("parallel_profile_count", DEFAULT_PARALLEL_PROFILE_COUNT)
+    manual_agents = runtime_overrides.get("target_agents")
+    if manual_agents is None:
+        manual_agents = config.get("target_agents") or 0
+
+    rationale: List[str] = []
+    if mode == "manual":
+        selected_rounds = clamp_int(int(manual_rounds or DEFAULT_MAX_ROUNDS), 6, 240)
+        selected_profiles = clamp_int(int(manual_profiles or DEFAULT_PARALLEL_PROFILE_COUNT), 2, 20)
+        rationale.append("manual mode selected: using explicit operator controls")
+    else:
+        if budget <= 0.25:
+            selected_rounds, selected_profiles = 12, 4
+        elif budget <= 0.75:
+            selected_rounds, selected_profiles = 20, 6
+        elif budget <= 1.5:
+            selected_rounds, selected_profiles = 28, 7
+        elif budget <= 3.0:
+            selected_rounds, selected_profiles = 42, 9
+        else:
+            selected_rounds, selected_profiles = 60, 11
+        rationale.append(f"auto mode selected with budget ${budget:.2f}")
+
+        quality = feed_quality.get("status")
+        if quality == "good":
+            selected_rounds += 4
+            selected_profiles += 1
+            rationale.append("feed quality good: increased simulation depth")
+        elif quality == "poor":
+            selected_rounds = max(10, selected_rounds - 6)
+            selected_profiles = max(3, selected_profiles - 1)
+            rationale.append("feed quality poor: reduced depth to avoid overfitting weak inputs")
+
+    if manual_agents:
+        try:
+            agent_hint = clamp_int(int(manual_agents), 6, 240)
+            selected_profiles = clamp_int(int(round(agent_hint / 6.0)), 2, 20)
+            rationale.append(f"agent hint {agent_hint} translated to profile parallelism {selected_profiles}")
+        except (TypeError, ValueError):
+            agent_hint = 0
+    else:
+        agent_hint = 0
+
+    selected_rounds = clamp_int(selected_rounds, 6, 240)
+    selected_profiles = clamp_int(selected_profiles, 2, 20)
+    return {
+        "mode": mode,
+        "budget_usd": budget,
+        "requested": {
+            "target_rounds": manual_rounds,
+            "target_profile_count": manual_profiles,
+            "target_agents": manual_agents,
+        },
+        "selected": {
+            "max_rounds": selected_rounds,
+            "parallel_profile_count": selected_profiles,
+            "target_agents_hint": agent_hint,
+        },
+        "rationale": rationale,
+    }
 
 
 def request_json(method: str, url: str, *, timeout: tuple[int, int] = (10, 90), **kwargs: Any) -> Any:
@@ -403,6 +601,49 @@ def check_worldosint_service(base_url: str) -> Dict[str, Any]:
             "url": url,
             "error": str(exc),
         }
+
+
+def fetch_worldosint_modules(base_url: str) -> Dict[str, Any]:
+    require_requests()
+    url = f"{base_url.rstrip('/')}/api/headless?module=list&format=json"
+    started = time.time()
+    response = requests.get(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+        timeout=(5, 20),
+    )
+    response.raise_for_status()
+    latency_ms = int((time.time() - started) * 1000)
+    payload = response.json() if response.content else {}
+    modules = payload.get("modules") if isinstance(payload, dict) else []
+    if not isinstance(modules, list):
+        modules = []
+    normalized: List[Dict[str, str]] = []
+    for item in modules:
+        if isinstance(item, str):
+            normalized.append({"name": item, "description": ""})
+            continue
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("id") or item.get("module") or "").strip()
+            if not name:
+                continue
+            normalized.append(
+                {
+                    "name": name,
+                    "description": str(item.get("description") or item.get("desc") or "").strip(),
+                }
+            )
+    normalized.sort(key=lambda row: row["name"].lower())
+    return {
+        "ok": True,
+        "url": url,
+        "latency_ms": latency_ms,
+        "count": len(normalized),
+        "modules": normalized,
+    }
 
 
 def build_feed_urls(topic: str, days: int) -> List[str]:
@@ -1306,7 +1547,13 @@ def run_mirofish_pipeline(
     }
 
 
-def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) -> Dict[str, Any]:
+def run_topic(
+    config: Dict[str, Any],
+    *,
+    simulate: bool,
+    generate_report: bool,
+    runtime_overrides: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     topic_id = config["topic_id"]
     topic = config["topic"]
     market_query = config.get("market_query") or topic
@@ -1353,6 +1600,16 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
         [name for name in headless_modules if name not in built_in_modules],
         module_params,
     )
+    feed_quality = assess_feed_quality(news, context, headless_modules, extra_modules)
+    simulation_plan = select_simulation_plan(config, feed_quality, runtime_overrides=runtime_overrides)
+    selected_rounds = int(simulation_plan["selected"]["max_rounds"])
+    selected_profiles = int(simulation_plan["selected"]["parallel_profile_count"])
+    require_feed_confirmation = bool((runtime_overrides or {}).get("require_feed_confirmation", False))
+    if simulate and require_feed_confirmation and feed_quality.get("status") == "poor":
+        raise PipelineError(
+            f"Feed confirmation failed: quality is poor (score={feed_quality.get('score')}). "
+            "Adjust modules/keywords or run without --require-feed-confirmation."
+        )
 
     generated_at = iso_now()
     seed_markdown = build_seed_markdown(
@@ -1386,6 +1643,8 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
         "news": news,
         "context": context,
         "extra_modules": extra_modules,
+        "feed_quality": feed_quality,
+        "simulation_plan": simulation_plan,
         "seed_path": str(seed_path),
         "simulate": simulate,
     }
@@ -1401,6 +1660,8 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
         "related_markets": markets[1:],
         "worldosint_status": world_status,
         "mirofish_status": mirofish_status,
+        "feed_quality": feed_quality,
+        "simulation_plan": simulation_plan,
     }
 
     if simulate:
@@ -1411,9 +1672,9 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
             mirofish_base_url=mirofish_base,
             mirofish_root=mirofish_root,
             platform=platform,
-            max_rounds=max_rounds,
+            max_rounds=selected_rounds,
             use_llm_for_profiles=use_llm_for_profiles,
-            parallel_profile_count=parallel_profile_count,
+            parallel_profile_count=selected_profiles,
             enable_graph_memory_update=enable_graph_memory_update,
             generate_report=generate_report,
             run_dir=run_dir,
@@ -1432,6 +1693,10 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
     summary_lines.append(f"- Deadline: {short_dt(markets[0]['endDate'])}")
     summary_lines.append(f"- URL: {markets[0]['url']}")
     summary_lines.append(f"- WorldOSINT modules: {', '.join(headless_modules)}")
+    summary_lines.append(f"- Feed quality: {feed_quality.get('status')} (score={feed_quality.get('score')})")
+    summary_lines.append(
+        f"- Simulation plan: mode={simulation_plan.get('mode')} rounds={selected_rounds} profiles={selected_profiles} budget=${simulation_plan.get('budget_usd'):.2f}"
+    )
     summary_lines.append("")
     summary_lines.append("## Artifacts")
     summary_lines.append("")
@@ -1447,6 +1712,252 @@ def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) 
     summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     result["summary_path"] = str(summary_path)
     return result
+
+
+def parse_markdown_value(markdown_text: str, label: str) -> str:
+    prefix = f"- {label}:"
+    for line in markdown_text.splitlines():
+        text = line.strip()
+        if text.startswith(prefix):
+            return text[len(prefix):].strip().strip("`")
+    return ""
+
+
+def find_latest_run(topic_id: str = "") -> Optional[Path]:
+    runs_root = DATA_DIR / "runs"
+    if not runs_root.exists():
+        return None
+    candidates: List[Path] = []
+    topic_dirs = [runs_root / topic_id] if topic_id else [p for p in runs_root.iterdir() if p.is_dir()]
+    for topic_dir in topic_dirs:
+        if not topic_dir.exists() or not topic_dir.is_dir():
+            continue
+        for run_dir in topic_dir.iterdir():
+            if run_dir.is_dir():
+                candidates.append(run_dir)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.name)
+
+
+def load_run_snapshot(run_dir: Path) -> Dict[str, Any]:
+    snapshots = sorted(run_dir.glob("*_snapshot.json"))
+    if not snapshots:
+        return {}
+    return load_json_file(snapshots[-1])
+
+
+def load_run_summary_markdown(run_dir: Path) -> str:
+    summary_path = run_dir / "run_summary.md"
+    if not summary_path.exists():
+        return ""
+    return summary_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def topic_from_path(run_dir: Path) -> str:
+    if run_dir.parent.name == "runs":
+        return ""
+    return run_dir.parent.name
+
+
+def build_console_payload(run_dir: Path, mirofish_root: Path) -> Dict[str, Any]:
+    snapshot = load_run_snapshot(run_dir)
+    summary_markdown = load_run_summary_markdown(run_dir)
+    primary_market = (snapshot.get("markets") or [{}])[0]
+    simulation_id = parse_markdown_value(summary_markdown, "Simulation ID")
+    simulation_entry = None
+    if simulation_id:
+        for entry in iter_simulation_entries(mirofish_root, include_actions=True):
+            if entry.get("simulation_id") == simulation_id:
+                simulation_entry = entry
+                break
+    feed_count = len((snapshot.get("news") or {}).get("items") or [])
+    theme_rows = (snapshot.get("news") or {}).get("themes") or []
+    top_theme = theme_rows[0]["theme"] if theme_rows else "n/a"
+    top_theme_count = theme_rows[0]["count"] if theme_rows else 0
+    risk_rows = (snapshot.get("context") or {}).get("riskRows") or []
+    risk_summary = ", ".join(
+        f"{row.get('region', 'n/a')} {row.get('combinedScore', 'n/a')}"
+        for row in risk_rows[:4]
+    ) or "n/a"
+    modules = snapshot.get("headless_modules") or []
+    run_status = "seed-only"
+    total_actions = 0
+    top_agents: List[str] = []
+    counterfactual_note = ""
+    if simulation_entry:
+        run_status = simulation_entry.get("status") or "unknown"
+        total_actions = int(simulation_entry.get("twitter_actions") or 0) + int(simulation_entry.get("reddit_actions") or 0)
+        top_agents_payload = parse_action_log(Path(simulation_entry["artifact_paths"]["twitter_log"])).get("top_agents", [])
+        top_agents = [f"{name} ({count})" for name, count in top_agents_payload[:3]]
+        cf = simulation_entry.get("counterfactual") or {}
+        if cf.get("enabled"):
+            counterfactual_note = f"branch of {cf.get('base_simulation_id') or 'unknown'} at round {cf.get('injection_round') or 'n/a'}"
+    return {
+        "topic_id": topic_from_path(run_dir),
+        "run_dir": str(run_dir),
+        "generated_at": snapshot.get("generated_at") or "n/a",
+        "topic": snapshot.get("topic") or "n/a",
+        "market_question": primary_market.get("question") or "n/a",
+        "market_bid": pct(primary_market.get("bestBid")),
+        "market_ask": pct(primary_market.get("bestAsk")),
+        "market_deadline": short_dt(primary_market.get("endDate")),
+        "market_url": primary_market.get("url") or "n/a",
+        "feed_count": feed_count,
+        "top_theme": top_theme,
+        "top_theme_count": top_theme_count,
+        "risk_summary": risk_summary,
+        "modules": modules,
+        "simulation_id": simulation_id or "n/a",
+        "run_status": run_status,
+        "total_actions": total_actions,
+        "top_agents": top_agents,
+        "counterfactual_note": counterfactual_note,
+    }
+
+
+def render_ascii_dashboard(payload: Dict[str, Any], width: int) -> str:
+    header_lines = [
+        format_kv("topic_id", payload.get("topic_id"), width - 4),
+        format_kv("topic", payload.get("topic"), width - 4),
+        format_kv("generated_at", payload.get("generated_at"), width - 4),
+        format_kv("run_dir", payload.get("run_dir"), width - 4),
+    ]
+    market_lines = [
+        format_kv("market", payload.get("market_question"), width - 4),
+        format_kv("bid -> ask", f"{payload.get('market_bid')} -> {payload.get('market_ask')}", width - 4),
+        format_kv("deadline", payload.get("market_deadline"), width - 4),
+        format_kv("url", payload.get("market_url"), width - 4),
+    ]
+    signal_lines = [
+        format_kv("rss_headlines", payload.get("feed_count"), width - 4),
+        format_kv("top_theme", f"{payload.get('top_theme')} ({payload.get('top_theme_count')})", width - 4),
+        format_kv("risk", payload.get("risk_summary"), width - 4),
+        format_kv("modules", ", ".join(payload.get("modules") or []), width - 4),
+    ]
+    run_lines = [
+        format_kv("simulation_id", payload.get("simulation_id"), width - 4),
+        format_kv("status", payload.get("run_status"), width - 4),
+        format_kv("total_actions", payload.get("total_actions"), width - 4),
+        format_kv("top_agents", ", ".join(payload.get("top_agents") or ["n/a"]), width - 4),
+    ]
+    if payload.get("counterfactual_note"):
+        run_lines.append(format_kv("counterfactual", payload.get("counterfactual_note"), width - 4))
+    return "\n".join(
+        [
+            ascii_box("PREDIHERMES CONSOLE", header_lines, width=width),
+            ascii_box("MARKET BOARD", market_lines, width=width),
+            ascii_box("OSINT SIGNALS", signal_lines, width=width),
+            ascii_box("SIMULATION", run_lines, width=width),
+        ]
+    )
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    topic_id = args.topic_id or args.topic_id_pos or ""
+    run_dir = Path(args.run_dir).expanduser() if args.run_dir else find_latest_run(topic_id)
+    if not run_dir or not run_dir.exists():
+        raise PipelineError("No run artifacts found. Run 'run-topic' or 'run-tracked' first.")
+    payload = build_console_payload(run_dir, resolve_mirofish_root(args.mirofish_root))
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(render_ascii_dashboard(payload, width=args.width))
+    return 0
+
+
+def cmd_command_catalog(args: argparse.Namespace) -> int:
+    items = [
+        "health: check WorldOSINT and MiroFish availability",
+        "list-worldosint-modules: discover available WorldOSINT modules",
+        "track-topic: persist a reusable topic profile",
+        "update-topic: modular edits (modules, params, rounds, platform)",
+        "plan-tracked <topic_id>: validate feed quality and auto/manual simulation plan",
+        "run-tracked <topic_id> [--simulate]: execute latest pipeline path",
+        "lookup-sim --query/--actor: resolve base + branch runs from local artifacts",
+        "dashboard [--topic-id]: show ASCII run metrics in Hermes CLI",
+    ]
+    prompts = [
+        "Use PrediHermes list-worldosint-modules and suggest modules for maritime conflict monitoring.",
+        "Use PrediHermes plan-tracked iran-conflict with budget 1.2 USD and confirm feed quality.",
+        "Use PrediHermes dashboard for iran-conflict and summarize risk drift.",
+        "Use PrediHermes lookup-sim for actor Shadow Hormuz and compare to base.",
+        "Use PrediHermes update-topic to add military_naval and set max rounds to 36.",
+    ]
+    if args.json:
+        print(json.dumps({"commands": items, "example_prompts": prompts}, ensure_ascii=False, indent=2))
+        return 0
+    width = args.width
+    lines = [format_kv(f"{index + 1}", item, width - 4) for index, item in enumerate(items)]
+    prompt_lines = [format_kv(f"prompt{index + 1}", prompt, width - 4) for index, prompt in enumerate(prompts)]
+    print("\n".join([ascii_box("COMMAND CATALOG", lines, width=width), ascii_box("HERMES ASK EXAMPLES", prompt_lines, width=width)]))
+    return 0
+
+
+def cmd_update_topic(args: argparse.Namespace) -> int:
+    state = load_state()
+    topic_record = state.get("topics", {}).get(args.topic_id)
+    if not topic_record:
+        raise PipelineError(f"Tracked topic '{args.topic_id}' does not exist")
+
+    modules = normalize_headless_modules(topic_record.get("headless_modules"))
+    set_modules = (args.set_headless_module or []) + (args.set_module or [])
+    add_modules = (args.add_headless_module or []) + (args.add_module or [])
+    remove_modules = (args.remove_headless_module or []) + (args.remove_module or [])
+    if set_modules:
+        modules = normalize_headless_modules(set_modules)
+    for module in add_modules:
+        if module not in modules:
+            modules.append(module)
+    if remove_modules:
+        remove_set = set(remove_modules)
+        modules = [name for name in modules if name not in remove_set]
+        if not modules:
+            raise PipelineError("At least one headless module must remain after removal")
+    topic_record["headless_modules"] = modules
+
+    module_params = normalize_module_params(topic_record.get("module_params"))
+    if args.set_module_param:
+        parsed = parse_module_param_args(args.set_module_param)
+        for module_name, payload in parsed.items():
+            module_params.setdefault(module_name, {}).update(payload)
+    for raw in args.remove_module_param:
+        text = str(raw).strip()
+        if not text:
+            continue
+        if "." in text:
+            module_name, key = text.split(".", 1)
+            if module_name in module_params and key in module_params[module_name]:
+                module_params[module_name].pop(key, None)
+                if not module_params[module_name]:
+                    module_params.pop(module_name, None)
+        else:
+            module_params.pop(text, None)
+    topic_record["module_params"] = module_params
+
+    if args.set_platform:
+        topic_record["platform"] = args.set_platform
+    if args.set_max_rounds is not None:
+        topic_record["max_rounds"] = int(args.set_max_rounds)
+    if args.set_parallel_profile_count is not None:
+        topic_record["parallel_profile_count"] = int(args.set_parallel_profile_count)
+    if args.set_simulation_mode:
+        topic_record["simulation_mode"] = args.set_simulation_mode
+    if args.set_budget_usd is not None:
+        topic_record["budget_usd"] = float(args.set_budget_usd)
+    if args.set_target_agents is not None:
+        topic_record["target_agents"] = int(args.set_target_agents)
+    if args.set_worldosint_base_url:
+        topic_record["worldosint_base_url"] = args.set_worldosint_base_url
+    if args.set_mirofish_base_url:
+        topic_record["mirofish_base_url"] = args.set_mirofish_base_url
+    if args.set_mirofish_root:
+        topic_record["mirofish_root"] = args.set_mirofish_root
+
+    topic_record["updated_at"] = iso_now()
+    save_state(state)
+    print(json.dumps(topic_record, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_health(args: argparse.Namespace) -> int:
@@ -1481,6 +1992,9 @@ def cmd_track_topic(args: argparse.Namespace) -> int:
         "mirofish_root": args.mirofish_root,
         "platform": args.platform,
         "max_rounds": args.max_rounds,
+        "simulation_mode": args.simulation_mode,
+        "budget_usd": args.budget_usd,
+        "target_agents": args.target_agents,
         "use_llm_for_profiles": bool(args.use_llm_for_profiles),
         "parallel_profile_count": args.parallel_profile_count,
         "enable_graph_memory_update": bool(args.enable_graph_memory_update),
@@ -1526,15 +2040,34 @@ def topic_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         "mirofish_root": args.mirofish_root,
         "platform": args.platform,
         "max_rounds": args.max_rounds,
+        "simulation_mode": args.simulation_mode,
+        "budget_usd": args.budget_usd,
+        "target_agents": args.target_agents,
         "use_llm_for_profiles": bool(args.use_llm_for_profiles),
         "parallel_profile_count": args.parallel_profile_count,
         "enable_graph_memory_update": bool(args.enable_graph_memory_update),
     }
 
 
+def runtime_overrides_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "simulation_mode": getattr(args, "simulation_mode", None),
+        "budget_usd": getattr(args, "budget_usd", None),
+        "target_rounds": getattr(args, "target_rounds", None),
+        "target_profile_count": getattr(args, "target_profile_count", None),
+        "target_agents": getattr(args, "target_agents", None),
+        "require_feed_confirmation": bool(getattr(args, "require_feed_confirmation", False)),
+    }
+
+
 def cmd_run_topic(args: argparse.Namespace) -> int:
     config = topic_from_args(args)
-    result = run_topic(config, simulate=args.simulate, generate_report=args.generate_report)
+    result = run_topic(
+        config,
+        simulate=args.simulate,
+        generate_report=args.generate_report,
+        runtime_overrides=runtime_overrides_from_args(args),
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -1544,8 +2077,37 @@ def cmd_run_tracked(args: argparse.Namespace) -> int:
     config = state.get("topics", {}).get(args.topic_id)
     if not config:
         raise PipelineError(f"Tracked topic '{args.topic_id}' does not exist")
-    result = run_topic(config, simulate=args.simulate, generate_report=args.generate_report)
+    result = run_topic(
+        config,
+        simulate=args.simulate,
+        generate_report=args.generate_report,
+        runtime_overrides=runtime_overrides_from_args(args),
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_plan_tracked(args: argparse.Namespace) -> int:
+    state = load_state()
+    config = state.get("topics", {}).get(args.topic_id)
+    if not config:
+        raise PipelineError(f"Tracked topic '{args.topic_id}' does not exist")
+    result = run_topic(
+        config,
+        simulate=False,
+        generate_report=False,
+        runtime_overrides=runtime_overrides_from_args(args),
+    )
+    output = {
+        "topic_id": result.get("topic_id"),
+        "topic": result.get("topic"),
+        "run_dir": result.get("run_dir"),
+        "feed_quality": result.get("feed_quality"),
+        "simulation_plan": result.get("simulation_plan"),
+        "primary_market": result.get("primary_market"),
+        "summary_path": result.get("summary_path"),
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1609,6 +2171,33 @@ def cmd_lookup_sim(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list_worldosint_modules(args: argparse.Namespace) -> int:
+    payload = fetch_worldosint_modules(args.worldosint_base_url)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    width = args.width
+    module_rows = payload.get("modules") or []
+    lines: List[str] = []
+    for index, row in enumerate(module_rows):
+        lines.append(
+            format_kv(
+                str(index + 1),
+                f"{row.get('name')} - {row.get('description') or 'no description'}",
+                width - 4,
+            )
+        )
+    if not lines:
+        lines = ["No modules returned from WorldOSINT list endpoint."]
+    header = [
+        format_kv("base", args.worldosint_base_url, width - 4),
+        format_kv("count", payload.get("count"), width - 4),
+        format_kv("latency_ms", payload.get("latency_ms"), width - 4),
+    ]
+    print("\n".join([ascii_box("WORLDOSINT MODULES", header, width=width), ascii_box("MODULE INDEX", lines, width=width)]))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Track geopolitical topics and drive WorldOSINT + Polymarket + MiroFish runs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1622,6 +2211,9 @@ def build_parser() -> argparse.ArgumentParser:
         "platform": DEFAULT_PLATFORM,
         "max_rounds": DEFAULT_MAX_ROUNDS,
         "parallel_profile_count": DEFAULT_PARALLEL_PROFILE_COUNT,
+        "simulation_mode": DEFAULT_SIMULATION_MODE,
+        "budget_usd": DEFAULT_BUDGET_USD,
+        "target_agents": 0,
     }
 
     def add_topic_config_args(target: argparse.ArgumentParser) -> None:
@@ -1655,6 +2247,27 @@ def build_parser() -> argparse.ArgumentParser:
     untrack.add_argument("topic_id")
     untrack.set_defaults(func=cmd_untrack_topic)
 
+    update_topic = subparsers.add_parser("update-topic", help="Modular updates for a tracked topic profile")
+    update_topic.add_argument("topic_id")
+    update_topic.add_argument("--set-headless-module", action="append", default=[])
+    update_topic.add_argument("--add-headless-module", action="append", default=[])
+    update_topic.add_argument("--remove-headless-module", action="append", default=[])
+    update_topic.add_argument("--set-module", action="append", default=[])
+    update_topic.add_argument("--add-module", action="append", default=[])
+    update_topic.add_argument("--remove-module", action="append", default=[])
+    update_topic.add_argument("--set-module-param", action="append", default=[])
+    update_topic.add_argument("--remove-module-param", action="append", default=[])
+    update_topic.add_argument("--set-platform", choices=["twitter", "reddit", "parallel"])
+    update_topic.add_argument("--set-max-rounds", type=int)
+    update_topic.add_argument("--set-parallel-profile-count", type=int)
+    update_topic.add_argument("--set-simulation-mode", choices=["auto", "manual"])
+    update_topic.add_argument("--set-budget-usd", type=float)
+    update_topic.add_argument("--set-target-agents", type=int)
+    update_topic.add_argument("--set-worldosint-base-url", default="")
+    update_topic.add_argument("--set-mirofish-base-url", default="")
+    update_topic.add_argument("--set-mirofish-root", default="")
+    update_topic.set_defaults(func=cmd_update_topic)
+
     def add_run_args(run_parser: argparse.ArgumentParser, tracked: bool = False) -> None:
         if not tracked:
             run_parser.add_argument("--topic-id", default="")
@@ -1662,6 +2275,12 @@ def build_parser() -> argparse.ArgumentParser:
             add_topic_config_args(run_parser)
         else:
             run_parser.add_argument("topic_id")
+            run_parser.add_argument("--simulation-mode", choices=["auto", "manual"], default=None)
+            run_parser.add_argument("--budget-usd", type=float, default=None)
+            run_parser.add_argument("--target-agents", type=int, default=None)
+        run_parser.add_argument("--target-rounds", type=int, default=None)
+        run_parser.add_argument("--target-profile-count", type=int, default=None)
+        run_parser.add_argument("--require-feed-confirmation", action="store_true")
         run_parser.add_argument("--simulate", action="store_true")
         run_parser.add_argument("--generate-report", action="store_true")
 
@@ -1672,6 +2291,18 @@ def build_parser() -> argparse.ArgumentParser:
     run_tracked_parser = subparsers.add_parser("run-tracked", help="Run a saved topic through the pipeline")
     add_run_args(run_tracked_parser, tracked=True)
     run_tracked_parser.set_defaults(func=cmd_run_tracked)
+
+    plan_tracked_parser = subparsers.add_parser(
+        "plan-tracked",
+        help="Collect current feeds/market and return feed-quality plus auto/manual simulation plan without running simulation",
+    )
+    plan_tracked_parser.add_argument("topic_id")
+    plan_tracked_parser.add_argument("--simulation-mode", choices=["auto", "manual"], default=None)
+    plan_tracked_parser.add_argument("--budget-usd", type=float, default=None)
+    plan_tracked_parser.add_argument("--target-rounds", type=int, default=None)
+    plan_tracked_parser.add_argument("--target-profile-count", type=int, default=None)
+    plan_tracked_parser.add_argument("--target-agents", type=int, default=None)
+    plan_tracked_parser.set_defaults(func=cmd_plan_tracked)
 
     lookup_sim = subparsers.add_parser(
         "lookup-sim",
@@ -1686,6 +2317,35 @@ def build_parser() -> argparse.ArgumentParser:
     lookup_sim.add_argument("--counterfactual-only", action="store_true")
     lookup_sim.add_argument("--include-actions", action="store_true")
     lookup_sim.set_defaults(func=cmd_lookup_sim)
+
+    list_modules = subparsers.add_parser(
+        "list-worldosint-modules",
+        help="List available WorldOSINT headless modules for modular configuration",
+    )
+    list_modules.add_argument("--worldosint-base-url", default=DEFAULT_WORLDOSINT_BASE)
+    list_modules.add_argument("--width", type=int, default=DEFAULT_CONSOLE_WIDTH)
+    list_modules.add_argument("--json", action="store_true")
+    list_modules.set_defaults(func=cmd_list_worldosint_modules)
+
+    dashboard = subparsers.add_parser(
+        "dashboard",
+        help="Render an ASCII dashboard from latest PrediHermes run artifacts",
+    )
+    dashboard.add_argument("topic_id_pos", nargs="?", default="")
+    dashboard.add_argument("--topic-id", default="")
+    dashboard.add_argument("--run-dir", default="")
+    dashboard.add_argument("--mirofish-root", default=str(DEFAULT_MIROFISH_ROOT))
+    dashboard.add_argument("--width", type=int, default=DEFAULT_CONSOLE_WIDTH)
+    dashboard.add_argument("--json", action="store_true")
+    dashboard.set_defaults(func=cmd_dashboard)
+
+    command_catalog = subparsers.add_parser(
+        "command-catalog",
+        help="Show PrediHermes command awareness and Hermes ask patterns",
+    )
+    command_catalog.add_argument("--width", type=int, default=DEFAULT_CONSOLE_WIDTH)
+    command_catalog.add_argument("--json", action="store_true")
+    command_catalog.set_defaults(func=cmd_command_catalog)
 
     return parser
 
