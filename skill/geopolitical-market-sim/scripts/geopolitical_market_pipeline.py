@@ -49,7 +49,6 @@ DEFAULT_DAYS = 7
 DEFAULT_MAX_DEADLINE_DAYS = 31
 DEFAULT_PARALLEL_PROFILE_COUNT = 6
 DEFAULT_SIMULATION_MODE = "auto"
-DEFAULT_BUDGET_USD = 1.0
 DEFAULT_HEADLESS_MODULES = [
     "news_rss",
     "intelligence_risk_scores",
@@ -445,20 +444,10 @@ def select_simulation_plan(
     if mode not in {"auto", "manual"}:
         mode = DEFAULT_SIMULATION_MODE
 
-    budget = runtime_overrides.get("budget_usd")
-    if budget is None:
-        budget = config.get("budget_usd", DEFAULT_BUDGET_USD)
-    try:
-        budget = max(0.0, float(budget))
-    except (TypeError, ValueError):
-        budget = DEFAULT_BUDGET_USD
-
     manual_rounds = runtime_overrides.get("target_rounds")
     if manual_rounds is None:
         manual_rounds = config.get("max_rounds", DEFAULT_MAX_ROUNDS)
-    manual_profiles = runtime_overrides.get("target_profile_count")
-    if manual_profiles is None:
-        manual_profiles = config.get("parallel_profile_count", DEFAULT_PARALLEL_PROFILE_COUNT)
+    manual_profiles = config.get("parallel_profile_count", DEFAULT_PARALLEL_PROFILE_COUNT)
     manual_agents = runtime_overrides.get("target_agents")
     if manual_agents is None:
         manual_agents = config.get("target_agents") or 0
@@ -469,27 +458,21 @@ def select_simulation_plan(
         selected_profiles = clamp_int(int(manual_profiles or DEFAULT_PARALLEL_PROFILE_COUNT), 2, 20)
         rationale.append("manual mode selected: using explicit operator controls")
     else:
-        if budget <= 0.25:
-            selected_rounds, selected_profiles = 12, 4
-        elif budget <= 0.75:
-            selected_rounds, selected_profiles = 20, 6
-        elif budget <= 1.5:
-            selected_rounds, selected_profiles = 28, 7
-        elif budget <= 3.0:
-            selected_rounds, selected_profiles = 42, 9
-        else:
-            selected_rounds, selected_profiles = 60, 11
-        rationale.append(f"auto mode selected with budget ${budget:.2f}")
-
+        selected_rounds, selected_profiles = 28, 7
+        rationale.append("auto mode selected: agent chooses simulation depth from feed quality")
         quality = feed_quality.get("status")
         if quality == "good":
-            selected_rounds += 4
-            selected_profiles += 1
+            selected_rounds = 36
+            selected_profiles = 9
             rationale.append("feed quality good: increased simulation depth")
+        elif quality == "moderate":
+            selected_rounds = 28
+            selected_profiles = 7
+            rationale.append("feed quality moderate: medium simulation depth")
         elif quality == "poor":
-            selected_rounds = max(10, selected_rounds - 6)
-            selected_profiles = max(3, selected_profiles - 1)
-            rationale.append("feed quality poor: reduced depth to avoid overfitting weak inputs")
+            selected_rounds = 18
+            selected_profiles = 5
+            rationale.append("feed quality poor: reduced depth until feed improves")
 
     if manual_agents:
         try:
@@ -505,10 +488,8 @@ def select_simulation_plan(
     selected_profiles = clamp_int(selected_profiles, 2, 20)
     return {
         "mode": mode,
-        "budget_usd": budget,
         "requested": {
             "target_rounds": manual_rounds,
-            "target_profile_count": manual_profiles,
             "target_agents": manual_agents,
         },
         "selected": {
@@ -1695,7 +1676,7 @@ def run_topic(
     summary_lines.append(f"- WorldOSINT modules: {', '.join(headless_modules)}")
     summary_lines.append(f"- Feed quality: {feed_quality.get('status')} (score={feed_quality.get('score')})")
     summary_lines.append(
-        f"- Simulation plan: mode={simulation_plan.get('mode')} rounds={selected_rounds} profiles={selected_profiles} budget=${simulation_plan.get('budget_usd'):.2f}"
+        f"- Simulation plan: mode={simulation_plan.get('mode')} rounds={selected_rounds} profiles={selected_profiles}"
     )
     summary_lines.append("")
     summary_lines.append("## Artifacts")
@@ -1879,7 +1860,7 @@ def cmd_command_catalog(args: argparse.Namespace) -> int:
     ]
     prompts = [
         "Use PrediHermes list-worldosint-modules and suggest modules for maritime conflict monitoring.",
-        "Use PrediHermes plan-tracked iran-conflict with budget 1.2 USD and confirm feed quality.",
+        "Use PrediHermes plan-tracked iran-conflict and confirm feed quality before simulation.",
         "Use PrediHermes dashboard for iran-conflict and summarize risk drift.",
         "Use PrediHermes lookup-sim for actor Shadow Hormuz and compare to base.",
         "Use PrediHermes update-topic to add military_naval and set max rounds to 36.",
@@ -1943,8 +1924,6 @@ def cmd_update_topic(args: argparse.Namespace) -> int:
         topic_record["parallel_profile_count"] = int(args.set_parallel_profile_count)
     if args.set_simulation_mode:
         topic_record["simulation_mode"] = args.set_simulation_mode
-    if args.set_budget_usd is not None:
-        topic_record["budget_usd"] = float(args.set_budget_usd)
     if args.set_target_agents is not None:
         topic_record["target_agents"] = int(args.set_target_agents)
     if args.set_worldosint_base_url:
@@ -1993,7 +1972,6 @@ def cmd_track_topic(args: argparse.Namespace) -> int:
         "platform": args.platform,
         "max_rounds": args.max_rounds,
         "simulation_mode": args.simulation_mode,
-        "budget_usd": args.budget_usd,
         "target_agents": args.target_agents,
         "use_llm_for_profiles": bool(args.use_llm_for_profiles),
         "parallel_profile_count": args.parallel_profile_count,
@@ -2041,7 +2019,6 @@ def topic_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         "platform": args.platform,
         "max_rounds": args.max_rounds,
         "simulation_mode": args.simulation_mode,
-        "budget_usd": args.budget_usd,
         "target_agents": args.target_agents,
         "use_llm_for_profiles": bool(args.use_llm_for_profiles),
         "parallel_profile_count": args.parallel_profile_count,
@@ -2052,9 +2029,7 @@ def topic_from_args(args: argparse.Namespace) -> Dict[str, Any]:
 def runtime_overrides_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     return {
         "simulation_mode": getattr(args, "simulation_mode", None),
-        "budget_usd": getattr(args, "budget_usd", None),
         "target_rounds": getattr(args, "target_rounds", None),
-        "target_profile_count": getattr(args, "target_profile_count", None),
         "target_agents": getattr(args, "target_agents", None),
         "require_feed_confirmation": bool(getattr(args, "require_feed_confirmation", False)),
     }
@@ -2212,7 +2187,6 @@ def build_parser() -> argparse.ArgumentParser:
         "max_rounds": DEFAULT_MAX_ROUNDS,
         "parallel_profile_count": DEFAULT_PARALLEL_PROFILE_COUNT,
         "simulation_mode": DEFAULT_SIMULATION_MODE,
-        "budget_usd": DEFAULT_BUDGET_USD,
         "target_agents": 0,
     }
 
@@ -2261,7 +2235,6 @@ def build_parser() -> argparse.ArgumentParser:
     update_topic.add_argument("--set-max-rounds", type=int)
     update_topic.add_argument("--set-parallel-profile-count", type=int)
     update_topic.add_argument("--set-simulation-mode", choices=["auto", "manual"])
-    update_topic.add_argument("--set-budget-usd", type=float)
     update_topic.add_argument("--set-target-agents", type=int)
     update_topic.add_argument("--set-worldosint-base-url", default="")
     update_topic.add_argument("--set-mirofish-base-url", default="")
@@ -2276,10 +2249,8 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             run_parser.add_argument("topic_id")
             run_parser.add_argument("--simulation-mode", choices=["auto", "manual"], default=None)
-            run_parser.add_argument("--budget-usd", type=float, default=None)
             run_parser.add_argument("--target-agents", type=int, default=None)
         run_parser.add_argument("--target-rounds", type=int, default=None)
-        run_parser.add_argument("--target-profile-count", type=int, default=None)
         run_parser.add_argument("--require-feed-confirmation", action="store_true")
         run_parser.add_argument("--simulate", action="store_true")
         run_parser.add_argument("--generate-report", action="store_true")
@@ -2298,9 +2269,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     plan_tracked_parser.add_argument("topic_id")
     plan_tracked_parser.add_argument("--simulation-mode", choices=["auto", "manual"], default=None)
-    plan_tracked_parser.add_argument("--budget-usd", type=float, default=None)
     plan_tracked_parser.add_argument("--target-rounds", type=int, default=None)
-    plan_tracked_parser.add_argument("--target-profile-count", type=int, default=None)
     plan_tracked_parser.add_argument("--target-agents", type=int, default=None)
     plan_tracked_parser.set_defaults(func=cmd_plan_tracked)
 

@@ -127,7 +127,7 @@ Before expensive runs, generate a plan and validate collected feeds:
 ```bash
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
   plan-tracked iran-conflict \
-  --budget-usd 1.2
+  --target-agents 48
 ```
 
 The plan output includes:
@@ -178,30 +178,26 @@ Useful modular flags:
 - `--set-platform twitter|reddit|parallel`
 - `--set-max-rounds <n>`
 - `--set-simulation-mode auto|manual`
-- `--set-budget-usd <usd>`
 - `--set-target-agents <n>` (agent-count hint used for planning profile depth)
 
 Per-run overrides:
 - `--simulation-mode auto|manual`
-- `--budget-usd <usd>`
 - `--target-rounds <n>`
-- `--target-profile-count <n>`
 - `--target-agents <n>`
 - `--require-feed-confirmation`
 
 Natural Hermes ask patterns for module control:
 - "Use PrediHermes list-worldosint-modules and propose the best modules for Hormuz risk."
 - "Use PrediHermes update-topic iran-conflict and add <module>, remove <module>, then show dashboard."
-- "Use PrediHermes plan-tracked iran-conflict with budget 1.0 and confirm if feed quality is good enough."
-- "Use PrediHermes run-tracked iran-conflict in manual mode with 36 rounds and profile count 9."
+- "Use PrediHermes plan-tracked iran-conflict and confirm if feed quality is good enough."
+- "Use PrediHermes run-tracked iran-conflict in manual mode with 36 rounds and 60 target agents."
 
 Simulation planning behavior:
-- If user gives explicit rounds/profile/agents, run in manual mode and follow those values.
-- If user asks the agent to decide, use auto mode with budget plus feed quality.
+- If user gives explicit rounds/agents, run in manual mode and follow those values.
+- If user asks the agent to decide, use auto mode with feed quality.
 - If user gives neither, ask concise clarifiers:
-  - budget range
-  - manual vs auto mode
-  - optional agent-count target
+  - auto vs manual mode
+  - optional rounds and/or agent-count target
 
 ## How to use the output
 

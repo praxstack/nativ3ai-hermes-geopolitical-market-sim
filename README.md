@@ -220,7 +220,7 @@ predihermes run-tracked iran-conflict --simulate
 Plan first (feed quality + simulation sizing) without running simulation:
 
 ```bash
-predihermes plan-tracked iran-conflict --budget-usd 1.2
+predihermes plan-tracked iran-conflict --target-agents 48
 ```
 
 Show ASCII dashboard:
@@ -236,14 +236,14 @@ predihermes list-worldosint-modules
 predihermes update-topic iran-conflict --add-module maritime_snapshot
 predihermes update-topic iran-conflict --remove-module maritime_snapshot
 predihermes update-topic iran-conflict --set-max-rounds 28
-predihermes update-topic iran-conflict --set-simulation-mode auto --set-budget-usd 1.0 --set-target-agents 48
+predihermes update-topic iran-conflict --set-simulation-mode auto --set-target-agents 48
 ```
 
 Per-run sizing overrides:
 
 ```bash
-predihermes run-tracked iran-conflict --simulate --simulation-mode auto --budget-usd 1.5
-predihermes run-tracked iran-conflict --simulate --simulation-mode manual --target-rounds 36 --target-profile-count 9
+predihermes run-tracked iran-conflict --simulate --simulation-mode auto --target-agents 48
+predihermes run-tracked iran-conflict --simulate --simulation-mode manual --target-rounds 36 --target-agents 60
 predihermes run-tracked iran-conflict --simulate --require-feed-confirmation
 ```
 
@@ -259,7 +259,7 @@ Natural prompts:
 
 - `Use PrediHermes list-worldosint-modules and suggest 6 modules for maritime risk.`
 - `Use PrediHermes update-topic iran-conflict: add module maritime_snapshot and set max rounds to 28.`
-- `Use PrediHermes plan-tracked iran-conflict with budget 1.0 and tell me if the feed is good enough.`
+- `Use PrediHermes plan-tracked iran-conflict and tell me if the feed is good enough.`
 - `Use PrediHermes run-tracked iran-conflict in manual mode with 40 rounds and 60 target agents.`
 - `Use PrediHermes run-tracked iran-conflict with simulate and summarize implied vs forecast.`
 - `Use PrediHermes dashboard iran-conflict and summarize top drift signals.`
