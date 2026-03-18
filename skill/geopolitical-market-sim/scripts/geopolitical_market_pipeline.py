@@ -15,6 +15,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote
 
+
+def _prefer_local_venv_python() -> None:
+    here = Path(__file__).resolve()
+    venv_python = here.parent.parent / ".venv" / "bin" / "python3"
+    if not venv_python.exists():
+        return
+    if Path(sys.executable).resolve() == venv_python.resolve():
+        return
+    os.execv(str(venv_python), [str(venv_python), str(here), *sys.argv[1:]])
+
+
+_prefer_local_venv_python()
+
 try:
     import requests
     REQUEST_EXCEPTION = requests.RequestException

@@ -9,14 +9,16 @@ PrediHermes is a Hermes skill for end-to-end geopolitical market forecasting:
 
 ## Table of Contents
 
+- [Quick Install](#quick-install)
 - [Architecture](#architecture)
 - [Prerequisites](#prerequisites)
+- [Doctor Check](#doctor-check)
 - [Companion Repos](#companion-repos)
 - [1) Start WorldOSINT](#1-start-worldosint)
 - [2) Start MiroFish](#2-start-mirofish)
 - [3) Install PrediHermes Skill](#3-install-predihermes-skill)
 - [4) Configure Hermes Model and API Key](#4-configure-hermes-model-and-api-key)
-- [5) Optional `predihermes` CLI Alias](#5-optional-predihermes-cli-alias)
+- [5) Generated Commands](#5-generated-commands)
 - [6) Verify End-to-End](#6-verify-end-to-end)
 - [7) Track and Run Topics](#7-track-and-run-topics)
 - [8) Use from Hermes Chat](#8-use-from-hermes-chat)
@@ -38,6 +40,40 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket selection -> seed pack
                                                 Hermes summary / cron
 ```
 
+## Quick Install
+
+Single-command bootstrap from this repo:
+
+```bash
+git clone https://github.com/nativ3ai/hermes-geopolitical-market-sim.git
+cd hermes-geopolitical-market-sim
+./install.sh --bootstrap-stack
+```
+
+What this does:
+
+- checks that Hermes is already installed locally
+- installs the PrediHermes skill into `~/.hermes/skills/research/geopolitical-market-sim`
+- clones or reuses the companion repos:
+  - `~/predihermes/companions/worldosint-headless`
+  - `~/predihermes/companions/MiroFish`
+- installs companion dependencies
+- writes helper launchers into `~/predihermes/bin`
+- writes non-secret local stack env entries into `~/.hermes/.env`
+
+What it does not do:
+
+- it does not invent or write your MiroFish secrets; you still need to set `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL_NAME`, and `ZEP_API_KEY` in `~/predihermes/companions/MiroFish/.env`
+
+Generated helper commands:
+
+- `~/predihermes/bin/predihermes`
+- `~/predihermes/bin/predihermes-worldosint`
+- `~/predihermes/bin/predihermes-worldosint-ws`
+- `~/predihermes/bin/predihermes-mirofish-backend`
+- `~/predihermes/bin/predihermes-mirofish-ui`
+- `~/predihermes/bin/predihermes-stack-health`
+
 ## Prerequisites
 
 - Hermes Agent installed and working (`hermes --help`)
@@ -45,6 +81,23 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket selection -> seed pack
 - Node.js 18+
 - Local or remote WorldOSINT endpoint
 - Local or remote MiroFish endpoint (required for `--simulate`)
+
+## Doctor Check
+
+Before bootstrap, or any time after install:
+
+```bash
+./install.sh --doctor
+```
+
+This checks:
+
+- `git`
+- `python3`
+- `hermes`
+- `node` / `npm`
+- optional `uv`
+- current PrediHermes install paths
 
 ## Companion Repos
 
@@ -54,6 +107,14 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket selection -> seed pack
 This skill is documented and validated against the `nativ3ai` repos above.
 
 ## 1) Start WorldOSINT
+
+If you used `./install.sh --bootstrap-stack`, use the generated launcher:
+
+```bash
+~/predihermes/bin/predihermes-worldosint
+```
+
+Otherwise, manual startup:
 
 ```bash
 git clone https://github.com/nativ3ai/worldosint-headless.git
@@ -75,10 +136,29 @@ curl "http://127.0.0.1:3000/api/headless?module=list&format=json"
 Optional websocket bridge:
 
 ```bash
+~/predihermes/bin/predihermes-worldosint-ws
+```
+
+Or manually:
+
+```bash
 npm run headless:ws -- --base http://127.0.0.1:3000 --port 8787 --interval 60000 --allow-local 1
 ```
 
 ## 2) Start MiroFish
+
+If you used `./install.sh --bootstrap-stack`, the repo is already cloned and dependencies are already installed. You only need to set the required keys in:
+
+- `~/predihermes/companions/MiroFish/.env`
+
+Then use the generated launchers:
+
+```bash
+~/predihermes/bin/predihermes-mirofish-backend
+~/predihermes/bin/predihermes-mirofish-ui
+```
+
+Manual setup remains:
 
 ```bash
 git clone https://github.com/nativ3ai/MiroFish.git
@@ -120,7 +200,7 @@ MIROFISH_FRONTEND_PORT=3001 FLASK_DEBUG=False npm run dev
 
 ## 3) Install PrediHermes Skill
 
-### Recommended (repo installer)
+### Skill only
 
 ```bash
 git clone https://github.com/nativ3ai/hermes-geopolitical-market-sim.git
@@ -132,10 +212,16 @@ This installs to:
 
 - `~/.hermes/skills/research/geopolitical-market-sim`
 
-### Install with optional launchd in one command
+### Full local stack bootstrap
 
 ```bash
-./install.sh --with-launchd \
+./install.sh --bootstrap-stack
+```
+
+### Full local stack bootstrap with launchd
+
+```bash
+./install.sh --bootstrap-stack --with-launchd \
   --worldosint-root /absolute/path/to/worldosint-headless \
   --mirofish-root /absolute/path/to/MiroFish
 ```
@@ -159,22 +245,20 @@ OPENAI_API_KEY=your_openai_api_key
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-## 5) Optional `predihermes` CLI Alias
+## 5) Generated Commands
 
-The skill works with full script path by default. For shorter commands, add:
+The installer now generates runnable helpers in `~/predihermes/bin`:
 
 ```bash
-mkdir -p ~/.local/bin
-cat > ~/.local/bin/predihermes <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-SCRIPT="$HOME/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py"
-exec python3 "$SCRIPT" "$@"
-SH
-chmod +x ~/.local/bin/predihermes
+~/predihermes/bin/predihermes
+~/predihermes/bin/predihermes-worldosint
+~/predihermes/bin/predihermes-worldosint-ws
+~/predihermes/bin/predihermes-mirofish-backend
+~/predihermes/bin/predihermes-mirofish-ui
+~/predihermes/bin/predihermes-stack-health
 ```
 
-Ensure `~/.local/bin` is in `PATH`.
+If you want shorter commands, add `~/predihermes/bin` to `PATH`.
 
 ## 6) Verify End-to-End
 
@@ -184,12 +268,12 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py command-catalog
 ```
 
-If you created the alias:
+If you are using the generated helper:
 
 ```bash
-predihermes health
-predihermes list-worldosint-modules
-predihermes command-catalog
+~/predihermes/bin/predihermes health
+~/predihermes/bin/predihermes list-worldosint-modules
+~/predihermes/bin/predihermes command-catalog
 ```
 
 ## 7) Track and Run Topics
@@ -359,7 +443,7 @@ Uninstall:
 - `Unknown provider 'openai'` in Hermes:
   - set `model.provider` to `openai-codex` (not `openai`)
 - `predihermes: command not found`:
-  - use full script path or add alias in Section 5
+  - use the generated helper in `~/predihermes/bin/predihermes` or add `~/predihermes/bin` to `PATH`
 - Health fails for WorldOSINT/MiroFish:
   - verify both services are up and URLs match your env
 - Status mismatches across simulations:
