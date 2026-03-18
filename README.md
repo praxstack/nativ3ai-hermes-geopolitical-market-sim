@@ -50,6 +50,12 @@ cd hermes-geopolitical-market-sim
 ./install.sh --bootstrap-stack
 ```
 
+Optional add-on, if you also want the universal URL transcriber skill wired into Hermes:
+
+```bash
+./install.sh --bootstrap-stack --with-video-transcriber
+```
+
 What this does:
 
 - checks that Hermes is already installed locally
@@ -65,6 +71,13 @@ What it does not do:
 
 - it does not invent or write your MiroFish secrets; you still need to set `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL_NAME`, and `ZEP_API_KEY` in `~/predihermes/companions/MiroFish/.env`
 
+Optional video transcriber add-on:
+
+- clones or reuses `~/predihermes/companions/universal-video-transcriber`
+- installs Hermes skill `~/.hermes/skills/research/video-url-transcriber`
+- installs transcriber Python requirements into a local skill `.venv`
+- tries to install `ffmpeg` and `yt-dlp` automatically when a supported package manager is available
+
 Generated helper commands:
 
 - `~/predihermes/bin/predihermes`
@@ -73,6 +86,11 @@ Generated helper commands:
 - `~/predihermes/bin/predihermes-mirofish-backend`
 - `~/predihermes/bin/predihermes-mirofish-ui`
 - `~/predihermes/bin/predihermes-stack-health`
+
+If `--with-video-transcriber` is enabled:
+
+- `~/predihermes/bin/predihermes-transcribe-url`
+- `~/predihermes/bin/predihermes-transcribe-api`
 
 ## Prerequisites
 
@@ -218,6 +236,12 @@ This installs to:
 ./install.sh --bootstrap-stack
 ```
 
+### Full local stack bootstrap with optional video transcriber
+
+```bash
+./install.sh --bootstrap-stack --with-video-transcriber
+```
+
 ### Full local stack bootstrap with launchd
 
 ```bash
@@ -256,6 +280,13 @@ The installer now generates runnable helpers in `~/predihermes/bin`:
 ~/predihermes/bin/predihermes-mirofish-backend
 ~/predihermes/bin/predihermes-mirofish-ui
 ~/predihermes/bin/predihermes-stack-health
+```
+
+If the optional universal transcriber is enabled:
+
+```bash
+~/predihermes/bin/predihermes-transcribe-url "https://www.youtube.com/watch?v=..."
+~/predihermes/bin/predihermes-transcribe-api
 ```
 
 If you want shorter commands, add `~/predihermes/bin` to `PATH`.
@@ -444,6 +475,9 @@ Uninstall:
   - set `model.provider` to `openai-codex` (not `openai`)
 - `predihermes: command not found`:
   - use the generated helper in `~/predihermes/bin/predihermes` or add `~/predihermes/bin` to `PATH`
+- `predihermes-transcribe-url` fails because `ffmpeg` or `yt-dlp` is missing:
+  - rerun `./install.sh --with-video-transcriber`
+  - if your package manager is unsupported, install `ffmpeg` and `yt-dlp` manually
 - Health fails for WorldOSINT/MiroFish:
   - verify both services are up and URLs match your env
 - Status mismatches across simulations:
