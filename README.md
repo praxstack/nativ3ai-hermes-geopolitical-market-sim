@@ -1,48 +1,76 @@
 # PrediHermes
 
-PrediHermes is a Hermes skill for end-to-end geopolitical market forecasting:
+PrediHermes is a Hermes skill for geopolitical market forecasting. It wires together:
 
-- WorldOSINT headless modules for OSINT signals
-- Polymarket Gamma/CLOB for open-market discovery and pricing
+- WorldOSINT headless feeds for modular OSINT ingestion
+- Polymarket Gamma/CLOB for open market discovery and pricing
 - MiroFish for multi-agent simulation and counterfactual branches
-- Hermes chat + cron for operator workflows and scheduling
+- Hermes chat and cron for operator workflows
 
-## Table of Contents
+## What It Does
 
-- [Quick Install](#quick-install)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Doctor Check](#doctor-check)
-- [Companion Repos](#companion-repos)
-- [1) Start WorldOSINT](#1-start-worldosint)
-- [2) Start MiroFish](#2-start-mirofish)
-- [3) Install PrediHermes Skill](#3-install-predihermes-skill)
-- [4) Configure Hermes Model and API Key](#4-configure-hermes-model-and-api-key)
-- [5) Generated Commands](#5-generated-commands)
-- [6) Verify End-to-End](#6-verify-end-to-end)
-- [7) Track and Run Topics](#7-track-and-run-topics)
-- [8) Use from Hermes Chat](#8-use-from-hermes-chat)
-- [9) Schedule Runs](#9-schedule-runs)
-- [10) Counterfactual Injection](#10-counterfactual-injection)
-- [Optional macOS `launchd` Add-On](#optional-macos-launchd-add-on)
-- [Troubleshooting](#troubleshooting)
-- [Repository Layout](#repository-layout)
+PrediHermes is not a fixed Iran-only pipeline. The core workflow is topic-modular:
+
+1. Track a topic with keywords, regions, and selected WorldOSINT modules.
+2. Pull open Polymarket markets related to that topic.
+3. Build a seed packet from current OSINT signals and market context.
+4. Run a MiroFish simulation with configurable rounds and agent count.
+5. Compare simulated probability against market-implied probability.
+6. Optionally branch a past simulation by injecting a new actor and measuring the butterfly effect.
 
 ## Architecture
 
 ```text
-WorldOSINT headless -> PrediHermes pipeline -> Polymarket selection -> seed packet/snapshot
+WorldOSINT headless -> PrediHermes pipeline -> Polymarket discovery -> seed packet
                                                           |
                                                           v
                                                      MiroFish run
                                                           |
                                                           v
-                                                Hermes summary / cron
+                                                 Hermes summary / cron
 ```
 
-## Quick Install
+## Companion Repos
 
-Single-command bootstrap from this repo:
+- WorldOSINT headless: https://github.com/nativ3ai/worldosint-headless
+- MiroFish fork used for this workflow: https://github.com/nativ3ai/MiroFish
+- Optional universal transcriber add-on: https://github.com/nativ3ai/universal-video-transcriber
+
+This repo is the Hermes skill and bootstrap layer. The WorldOSINT and MiroFish repos remain separate companions.
+
+## Prerequisites
+
+- Hermes Agent installed and working
+- Python `3.10+`
+- Node.js `18+`
+- `git`
+- `npm`
+
+Check the host before installing:
+
+```bash
+./install.sh --doctor
+```
+
+## Install
+
+### Skill only
+
+This installs the PrediHermes skill into Hermes without cloning companions:
+
+```bash
+git clone https://github.com/nativ3ai/hermes-geopolitical-market-sim.git
+cd hermes-geopolitical-market-sim
+./install.sh
+```
+
+Installed path:
+
+- `~/.hermes/skills/research/geopolitical-market-sim`
+
+### Full local stack
+
+This installs the skill, clones WorldOSINT and MiroFish, installs their dependencies, and writes helper launchers.
 
 ```bash
 git clone https://github.com/nativ3ai/hermes-geopolitical-market-sim.git
@@ -50,105 +78,76 @@ cd hermes-geopolitical-market-sim
 ./install.sh --bootstrap-stack
 ```
 
-Optional add-on, if you also want the universal URL transcriber skill wired into Hermes:
+### Full local stack with optional transcriber
 
 ```bash
 ./install.sh --bootstrap-stack --with-video-transcriber
 ```
 
-What this does:
-
-- checks that Hermes is already installed locally
-- installs the PrediHermes skill into `~/.hermes/skills/research/geopolitical-market-sim`
-- clones or reuses the companion repos:
-  - `~/predihermes/companions/worldosint-headless`
-  - `~/predihermes/companions/MiroFish`
-- installs companion dependencies
-- writes helper launchers into `~/predihermes/bin`
-- writes non-secret local stack env entries into `~/.hermes/.env`
-
-What it does not do:
-
-- it does not invent or write your MiroFish secrets; you still need to set `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL_NAME`, and `ZEP_API_KEY` in `~/predihermes/companions/MiroFish/.env`
-
-Optional video transcriber add-on:
-
-- clones or reuses `~/predihermes/companions/universal-video-transcriber`
-- installs Hermes skill `~/.hermes/skills/research/video-url-transcriber`
-- installs transcriber Python requirements into a local skill `.venv`
-- tries to install `ffmpeg` and `yt-dlp` automatically when a supported package manager is available
-
-Generated helper commands:
-
-- `~/predihermes/bin/predihermes`
-- `~/predihermes/bin/predihermes-worldosint`
-- `~/predihermes/bin/predihermes-worldosint-ws`
-- `~/predihermes/bin/predihermes-mirofish-backend`
-- `~/predihermes/bin/predihermes-mirofish-ui`
-- `~/predihermes/bin/predihermes-stack-health`
-
-If `--with-video-transcriber` is enabled:
-
-- `~/predihermes/bin/predihermes-transcribe-url`
-- `~/predihermes/bin/predihermes-transcribe-api`
-
-## Prerequisites
-
-- Hermes Agent installed and working (`hermes --help`)
-- Python 3.10+
-- Node.js 18+
-- Local or remote WorldOSINT endpoint
-- Local or remote MiroFish endpoint (required for `--simulate`)
-
-## Doctor Check
-
-Before bootstrap, or any time after install:
+### Optional launchd add-on
 
 ```bash
-./install.sh --doctor
+./install.sh --bootstrap-stack --with-launchd
 ```
 
-This checks:
+## What The Installer Creates
 
-- `git`
-- `python3`
-- `hermes`
-- `node` / `npm`
-- optional `uv`
-- current PrediHermes install paths
+Default local stack layout:
 
-## Companion Repos
+```text
+~/predihermes/
+├── bin/
+│   ├── predihermes
+│   ├── predihermes-worldosint
+│   ├── predihermes-worldosint-ws
+│   ├── predihermes-mirofish-backend
+│   ├── predihermes-mirofish-ui
+│   └── predihermes-stack-health
+└── companions/
+    ├── worldosint-headless/
+    ├── MiroFish/
+    └── universal-video-transcriber/   # only if enabled
+```
 
-- WorldOSINT headless: https://github.com/nativ3ai/worldosint-headless
-- MiroFish fork used for this workflow: https://github.com/nativ3ai/MiroFish
+The installer also writes non-secret local stack pointers into:
 
-This skill is documented and validated against the `nativ3ai` repos above.
+- `~/.hermes/.env`
 
-## 1) Start WorldOSINT
+## Required Manual Configuration
 
-If you used `./install.sh --bootstrap-stack`, use the generated launcher:
+PrediHermes can bootstrap the stack, but it does not invent your model credentials.
+
+### Hermes provider
+
+Hermes just needs a working provider. Configure that however you prefer:
+
+```bash
+hermes model
+```
+
+If you use OpenAI Codex through ChatGPT OAuth, select `openai-codex` in `hermes model`.
+
+### MiroFish secrets
+
+Set these in:
+
+- `~/predihermes/companions/MiroFish/.env`
+
+Required:
+
+- `LLM_API_KEY`
+- `LLM_BASE_URL`
+- `LLM_MODEL_NAME`
+- `ZEP_API_KEY`
+
+## Start The Stack
+
+### WorldOSINT
+
+If you used bootstrap:
 
 ```bash
 ~/predihermes/bin/predihermes-worldosint
-```
-
-Otherwise, manual startup:
-
-```bash
-git clone https://github.com/nativ3ai/worldosint-headless.git
-cd worldosint-headless
-npm install
-npm run dev
-```
-
-Default base URL:
-
-- `http://127.0.0.1:3000`
-
-Check module catalog:
-
-```bash
-curl "http://127.0.0.1:3000/api/headless?module=list&format=json"
 ```
 
 Optional websocket bridge:
@@ -157,141 +156,56 @@ Optional websocket bridge:
 ~/predihermes/bin/predihermes-worldosint-ws
 ```
 
-Or manually:
+Default base URL:
+
+- `http://127.0.0.1:3000`
+
+Manual WorldOSINT startup remains:
 
 ```bash
-npm run headless:ws -- --base http://127.0.0.1:3000 --port 8787 --interval 60000 --allow-local 1
+git clone https://github.com/nativ3ai/worldosint-headless.git
+cd worldosint-headless
+npm install
+npm run dev
 ```
 
-## 2) Start MiroFish
+### MiroFish
 
-If you used `./install.sh --bootstrap-stack`, the repo is already cloned and dependencies are already installed. You only need to set the required keys in:
-
-- `~/predihermes/companions/MiroFish/.env`
-
-Then use the generated launchers:
+If you used bootstrap:
 
 ```bash
 ~/predihermes/bin/predihermes-mirofish-backend
 ~/predihermes/bin/predihermes-mirofish-ui
-```
-
-Manual setup remains:
-
-```bash
-git clone https://github.com/nativ3ai/MiroFish.git
-cd MiroFish
-cp .env.example .env
-```
-
-Set required `.env` values for MiroFish:
-
-- `LLM_API_KEY`
-- `LLM_BASE_URL`
-- `LLM_MODEL_NAME`
-- `ZEP_API_KEY`
-
-Install and run backend:
-
-```bash
-npm install
-cd frontend && npm install && cd ..
-cd backend && uv sync && cd ..
-FLASK_DEBUG=False npm run backend
 ```
 
 Default API:
 
 - `http://127.0.0.1:5001`
 
-Health:
+Manual MiroFish startup remains:
 
 ```bash
-curl "http://127.0.0.1:5001/health"
+git clone https://github.com/nativ3ai/MiroFish.git
+cd MiroFish
+cp .env.example .env
+npm install
+cd frontend && npm install && cd ..
+cd backend && uv sync && cd ..
+FLASK_DEBUG=False npm run backend
 ```
 
-Optional UI:
+## Verify
+
+Helper-based verification:
 
 ```bash
-MIROFISH_FRONTEND_PORT=3001 FLASK_DEBUG=False npm run dev
-```
-
-## 3) Install PrediHermes Skill
-
-### Skill only
-
-```bash
-git clone https://github.com/nativ3ai/hermes-geopolitical-market-sim.git
-cd hermes-geopolitical-market-sim
-./install.sh
-```
-
-This installs to:
-
-- `~/.hermes/skills/research/geopolitical-market-sim`
-
-### Full local stack bootstrap
-
-```bash
-./install.sh --bootstrap-stack
-```
-
-### Full local stack bootstrap with optional video transcriber
-
-```bash
-./install.sh --bootstrap-stack --with-video-transcriber
-```
-
-### Full local stack bootstrap with launchd
-
-```bash
-./install.sh --bootstrap-stack --with-launchd \
-  --worldosint-root /absolute/path/to/worldosint-headless \
-  --mirofish-root /absolute/path/to/MiroFish
-```
-
-## 4) Configure Hermes Model and API Key
-
-Set Hermes to OpenAI Codex provider with your preferred model:
-
-```bash
-hermes config set model.provider openai-codex
-hermes config set model.default gpt-5.3-codex-medium
-hermes config set model.base_url https://api.openai.com/v1
-```
-
-Put your key in:
-
-- `~/.hermes/.env`
-
-```env
-OPENAI_API_KEY=your_openai_api_key
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-## 5) Generated Commands
-
-The installer now generates runnable helpers in `~/predihermes/bin`:
-
-```bash
-~/predihermes/bin/predihermes
-~/predihermes/bin/predihermes-worldosint
-~/predihermes/bin/predihermes-worldosint-ws
-~/predihermes/bin/predihermes-mirofish-backend
-~/predihermes/bin/predihermes-mirofish-ui
 ~/predihermes/bin/predihermes-stack-health
+~/predihermes/bin/predihermes health
+~/predihermes/bin/predihermes list-worldosint-modules
+~/predihermes/bin/predihermes command-catalog
 ```
 
-If the optional universal transcriber is enabled:
-
-```bash
-~/predihermes/bin/predihermes-transcribe-url "https://www.youtube.com/watch?v=..."
-~/predihermes/bin/predihermes-transcribe-api
-```
-
-If you want shorter commands, add `~/predihermes/bin` to `PATH`.
-
-## 6) Verify End-to-End
+Direct skill path also works:
 
 ```bash
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py health
@@ -299,17 +213,17 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py command-catalog
 ```
 
-If you are using the generated helper:
+## Core CLI Flow
+
+Add `~/predihermes/bin` to `PATH` if you want shorter commands. Otherwise call the helper with the full path.
+
+### Inspect available OSINT modules
 
 ```bash
-~/predihermes/bin/predihermes health
-~/predihermes/bin/predihermes list-worldosint-modules
-~/predihermes/bin/predihermes command-catalog
+predihermes list-worldosint-modules
 ```
 
-## 7) Track and Run Topics
-
-Track topic:
+### Track a topic
 
 ```bash
 predihermes track-topic \
@@ -320,68 +234,69 @@ predihermes track-topic \
   --region-code IR --region-code IL --region-code SA --region-code US
 ```
 
-Run tracked topic (seed only):
-
-```bash
-predihermes run-tracked iran-conflict
-```
-
-Run tracked topic with simulation:
-
-```bash
-predihermes run-tracked iran-conflict --simulate
-```
-
-Plan first (feed quality + simulation sizing) without running simulation:
+### Plan before running
 
 ```bash
 predihermes plan-tracked iran-conflict --target-agents 48
 ```
 
-Show ASCII dashboard:
+### Run without simulation
 
 ```bash
-predihermes dashboard iran-conflict
+predihermes run-tracked iran-conflict
 ```
 
-Modular control examples:
+### Run with simulation
 
 ```bash
-predihermes list-worldosint-modules
+predihermes run-tracked iran-conflict --simulate
+```
+
+### Override rounds and agent count per run
+
+```bash
+predihermes run-tracked iran-conflict \
+  --simulate \
+  --simulation-mode manual \
+  --target-rounds 36 \
+  --target-agents 60
+```
+
+### Update a topic modularly
+
+```bash
 predihermes update-topic iran-conflict --add-module maritime_snapshot
 predihermes update-topic iran-conflict --remove-module maritime_snapshot
 predihermes update-topic iran-conflict --set-max-rounds 28
 predihermes update-topic iran-conflict --set-simulation-mode auto --set-target-agents 48
 ```
 
-Per-run sizing overrides:
+### Show dashboard
 
 ```bash
-predihermes run-tracked iran-conflict --simulate --simulation-mode auto --target-agents 48
-predihermes run-tracked iran-conflict --simulate --simulation-mode manual --target-rounds 36 --target-agents 60
-predihermes run-tracked iran-conflict --simulate --require-feed-confirmation
+predihermes dashboard iran-conflict
 ```
 
-## 8) Use from Hermes Chat
+## Use From Hermes Chat
 
-Start with skill loaded:
+Load the skill:
 
 ```bash
 hermes -s geopolitical-market-sim
 ```
 
-Natural prompts:
+Natural prompt examples:
 
 - `Use PrediHermes list-worldosint-modules and suggest 6 modules for maritime risk.`
 - `Use PrediHermes update-topic iran-conflict: add module maritime_snapshot and set max rounds to 28.`
 - `Use PrediHermes plan-tracked iran-conflict and tell me if the feed is good enough.`
-- `Use PrediHermes run-tracked iran-conflict in manual mode with 40 rounds and 60 target agents.`
+- `Use PrediHermes run-tracked iran-conflict in manual mode with 40 rounds and 60 agents.`
 - `Use PrediHermes run-tracked iran-conflict with simulate and summarize implied vs forecast.`
 - `Use PrediHermes dashboard iran-conflict and summarize top drift signals.`
 
-## 9) Schedule Runs
+## Schedule Runs
 
-Daily scheduled run:
+Daily scheduled run example:
 
 ```bash
 hermes cron create 'every 1d' \
@@ -391,9 +306,9 @@ hermes cron create 'every 1d' \
   --deliver local
 ```
 
-## 10) Counterfactual Injection
+## Counterfactual Branches
 
-Create branch from base simulation:
+Create a branch from a base simulation:
 
 ```bash
 curl -X POST http://127.0.0.1:5001/api/simulation/<base_simulation_id>/counterfactual \
@@ -419,7 +334,7 @@ curl -X POST http://127.0.0.1:5001/api/simulation/<base_simulation_id>/counterfa
   }'
 ```
 
-Start branch:
+Start the new branch:
 
 ```bash
 curl -X POST http://127.0.0.1:5001/api/simulation/start \
@@ -432,16 +347,16 @@ curl -X POST http://127.0.0.1:5001/api/simulation/start \
   }'
 ```
 
-Monitor:
+Useful monitoring endpoints:
 
 - `GET /api/simulation/<id>/run-status`
 - `GET /api/simulation/<id>/run-status/detail`
 - `GET /api/simulation/<id>/timeline`
 - `GET /api/simulation/<id>/actions?round_num=<n>`
 
-## Optional macOS `launchd` Add-On
+## Optional launchd
 
-Install agents:
+Install launchd agents:
 
 ```bash
 ./launchd/install_launchd.sh \
@@ -452,10 +367,10 @@ Install agents:
 Installed labels:
 
 - `com.predihermes.worldosint`
-- `com.predihermes.worldosint-ws` (optional)
+- `com.predihermes.worldosint-ws`
 - `com.predihermes.mirofish-backend`
 
-Checks:
+Check status:
 
 ```bash
 launchctl list | grep predihermes
@@ -471,22 +386,16 @@ Uninstall:
 
 ## Troubleshooting
 
-- `Unknown provider 'openai'` in Hermes:
-  - set `model.provider` to `openai-codex` (not `openai`)
-- `predihermes: command not found`:
-  - use the generated helper in `~/predihermes/bin/predihermes` or add `~/predihermes/bin` to `PATH`
-- `predihermes-transcribe-url` fails because `ffmpeg` or `yt-dlp` is missing:
-  - rerun `./install.sh --with-video-transcriber`
-  - if your package manager is unsupported, install `ffmpeg` and `yt-dlp` manually
-- Health fails for WorldOSINT/MiroFish:
-  - verify both services are up and URLs match your env
-- Status mismatches across simulations:
-  - compare both `state.json` and `run_state.json`; older runs may contain stale status fields
-
-Artifact truth rule:
-
-- Do not claim files/reports/media exist until verified.
-- Use `test -f` or `stat` for files and `ffprobe` for media duration/size.
+- `predihermes: command not found`
+  - Use `~/predihermes/bin/predihermes` or add `~/predihermes/bin` to `PATH`.
+- MiroFish simulation fails immediately
+  - Check `~/predihermes/companions/MiroFish/.env` and verify the required keys are set.
+- WorldOSINT or MiroFish health checks fail
+  - Verify both services are running and the URLs in `~/.hermes/.env` match your local stack.
+- Optional transcriber fails because `ffmpeg` or `yt-dlp` is missing
+  - Rerun `./install.sh --bootstrap-stack --with-video-transcriber` or install those tools manually.
+- A run artifact is referenced but missing
+  - Verify it with `test -f`, `stat`, or `ffprobe` before claiming it exists.
 
 ## Repository Layout
 
