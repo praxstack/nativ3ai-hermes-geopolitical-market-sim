@@ -54,6 +54,13 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 If `MiroFish` is down, do not claim the simulation ran. If `WorldOSINT` is down, do not claim the packet is current.
 If MiroFish uses `GRAPH_BACKEND=local`, that is valid and expected. Only ask for `ZEP_API_KEY` when the operator explicitly chose `GRAPH_BACKEND=zep`.
 
+Backend selection rule:
+- prefer local graph mode unless the user explicitly asks for Zep
+- if the user says they want the cheaper/simpler local setup, use `GRAPH_BACKEND=local`
+- if Zep returns quota/auth/availability errors, recommend switching MiroFish to `GRAPH_BACKEND=local` and restarting the backend
+- do not block simulation work on missing `ZEP_API_KEY` if local graph mode is available
+- only treat `ZEP_API_KEY` as required when `GRAPH_BACKEND=zep`
+
 If health fails because the local services are not running and the helper launchers exist, bring them up with:
 
 ```bash
@@ -77,6 +84,14 @@ When the user asks you to start or stop the stack from Hermes:
 2. run `~/predihermes/bin/predihermes-stack-status` to confirm tracked processes
 3. run `~/predihermes/bin/predihermes-stack-health` to confirm the pipeline can talk to them
 4. only then proceed with topic planning or simulation
+
+If health fails because Zep is unavailable but the MiroFish backend can run locally:
+
+1. inspect `~/predihermes/companions/MiroFish/.env`
+2. if the operator did not explicitly require Zep, set `GRAPH_BACKEND=local`
+3. restart the MiroFish backend
+4. rerun `~/predihermes/bin/predihermes-stack-health`
+5. continue with the pipeline once health passes
 
 When the user asks to stop the local stack:
 
