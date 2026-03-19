@@ -25,6 +25,7 @@ Command policy:
 - searches open Polymarket markets, prefers near-deadline contracts, and pulls top-of-book pricing
 - writes a MiroFish-ready seed packet and raw snapshot under `~/.hermes/data/geopolitical-market-sim/runs/...`
 - optionally drives the full MiroFish API pipeline with moderate defaults
+- supports MiroFish running either with the local SQLite graph backend or the Zep backend; do not assume Zep is present
 
 Treat Iran as an example, not a built-in assumption. This skill is meant for reusable tracked topics.
 
@@ -46,6 +47,7 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 ```
 
 If `MiroFish` is down, do not claim the simulation ran. If `WorldOSINT` is down, do not claim the packet is current.
+If MiroFish uses `GRAPH_BACKEND=local`, that is valid and expected. Only ask for `ZEP_API_KEY` when the operator explicitly chose `GRAPH_BACKEND=zep`.
 
 ## Track a topic
 

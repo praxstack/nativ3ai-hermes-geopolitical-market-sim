@@ -138,7 +138,16 @@ Required:
 - `LLM_API_KEY`
 - `LLM_BASE_URL`
 - `LLM_MODEL_NAME`
-- `ZEP_API_KEY`
+- `GRAPH_BACKEND=local` for the default local SQLite graph store
+
+Optional:
+
+- `ZEP_API_KEY` only if you switch `GRAPH_BACKEND=zep`
+
+Notes:
+
+- `GRAPH_BACKEND=auto` will use Zep only when a Zep key is present.
+- `GRAPH_BACKEND=local` stores graph state under `backend/uploads/graphs/*.sqlite3`.
 
 ## Start The Stack
 
@@ -188,6 +197,7 @@ Manual MiroFish startup remains:
 git clone https://github.com/nativ3ai/MiroFish.git
 cd MiroFish
 cp .env.example .env
+echo 'GRAPH_BACKEND=local' >> .env
 npm install
 cd frontend && npm install && cd ..
 cd backend && uv sync && cd ..
@@ -389,7 +399,9 @@ Uninstall:
 - `predihermes: command not found`
   - Use `~/predihermes/bin/predihermes` or add `~/predihermes/bin` to `PATH`.
 - MiroFish simulation fails immediately
-  - Check `~/predihermes/companions/MiroFish/.env` and verify the required keys are set.
+  - Check `~/predihermes/companions/MiroFish/.env` and verify `LLM_*` values are set.
+  - If you do not use Zep, keep `GRAPH_BACKEND=local`.
+  - If you do use Zep, set `GRAPH_BACKEND=zep` and provide `ZEP_API_KEY`.
 - WorldOSINT or MiroFish health checks fail
   - Verify both services are running and the URLs in `~/.hermes/.env` match your local stack.
 - Optional transcriber fails because `ffmpeg` or `yt-dlp` is missing

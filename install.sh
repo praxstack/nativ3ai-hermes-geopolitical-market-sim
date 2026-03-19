@@ -73,6 +73,33 @@ write_script() {
   chmod +x "$path"
 }
 
+upsert_env_key() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
+  tmp="$(mktemp)"
+  if [[ -f "$env_file" ]]; then
+    awk -v key="$key" -v value="$value" '
+      BEGIN {updated = 0}
+      $0 ~ "^[[:space:]]*" key "=" {
+        print key "=" value
+        updated = 1
+        next
+      }
+      {print}
+      END {
+        if (!updated) {
+          print key "=" value
+        }
+      }
+    ' "$env_file" > "$tmp"
+  else
+    printf '%s=%s\n' "$key" "$value" > "$tmp"
+  fi
+  mv "$tmp" "$env_file"
+}
+
 upsert_predihermes_env_block() {
   local env_file="$1"
   local mirofish_root="$2"
@@ -260,6 +287,7 @@ install_mirofish() {
     cp "$MIROFISH_ROOT/.env.example" "$MIROFISH_ROOT/.env"
     say "Created $MIROFISH_ROOT/.env from .env.example"
   fi
+  upsert_env_key "$MIROFISH_ROOT/.env" "GRAPH_BACKEND" "local"
 
   if [[ "$SKIP_MIROFISH_INSTALL" -eq 0 ]]; then
     has_cmd npm || fail "npm is required to bootstrap MiroFish"
@@ -435,7 +463,8 @@ print_summary() {
     printf '  LLM_API_KEY\n'
     printf '  LLM_BASE_URL\n'
     printf '  LLM_MODEL_NAME\n'
-    printf '  ZEP_API_KEY\n'
+    printf '  GRAPH_BACKEND=local   (default written by installer)\n'
+    printf '  ZEP_API_KEY           (only if you switch GRAPH_BACKEND=zep)\n'
     printf '\n'
   fi
   printf 'If %s is not on PATH, run the commands with the full path shown above.\n' "$BIN_DIR"
