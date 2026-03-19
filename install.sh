@@ -340,6 +340,8 @@ install_video_transcriber() {
 
 write_helper_launchers() {
   mkdir -p "$BIN_DIR"
+  mkdir -p "$LOG_DIR"
+  mkdir -p "$RUN_DIR"
 
   write_script "$BIN_DIR/predihermes" <<SCRIPT
 #!/usr/bin/env bash
@@ -388,6 +390,162 @@ SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
 exec "$DEST/.venv/bin/python3" "$DEST/scripts/geopolitical_market_pipeline.py" health --mirofish-root "$MIROFISH_ROOT" "\$@"
+SCRIPT
+
+  write_script "$BIN_DIR/predihermes-stack-up" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+BIN_DIR="$BIN_DIR"
+LOG_DIR="$LOG_DIR"
+RUN_DIR="$RUN_DIR"
+WITH_UI=0
+WITH_WS=1
+FORCE_RESTART=0
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  predihermes-stack-up [--with-ui] [--without-ws] [--force-restart]
+USAGE
+}
+
+while ((\$#)); do
+  case "\$1" in
+    --with-ui) WITH_UI=1 ;;
+    --without-ws) WITH_WS=0 ;;
+    --force-restart) FORCE_RESTART=1 ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      printf '[PrediHermes] Unknown option: %s\n' "\$1" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+mkdir -p "\$LOG_DIR" "\$RUN_DIR"
+
+is_running() {
+  local pid_file="\$1"
+  [[ -f "\$pid_file" ]] || return 1
+  local pid
+  pid="\$(cat "\$pid_file" 2>/dev/null || true)"
+  [[ -n "\$pid" ]] || return 1
+  kill -0 "\$pid" 2>/dev/null
+}
+
+stop_if_needed() {
+  local name="\$1"
+  local pid_file="\$RUN_DIR/\$name.pid"
+  if is_running "\$pid_file"; then
+    local pid
+    pid="\$(cat "\$pid_file")"
+    kill "\$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "\$pid" 2>/dev/null || true
+  fi
+  rm -f "\$pid_file"
+}
+
+start_service() {
+  local name="\$1"
+  shift
+  local pid_file="\$RUN_DIR/\$name.pid"
+  local log_file="\$LOG_DIR/\$name.log"
+  if [[ "\$FORCE_RESTART" -eq 1 ]]; then
+    stop_if_needed "\$name"
+  fi
+  if is_running "\$pid_file"; then
+    printf '[PrediHermes] %s already running (pid=%s)\n' "\$name" "\$(cat "\$pid_file")"
+    return 0
+  fi
+  rm -f "\$pid_file"
+  nohup "\$@" >>"\$log_file" 2>&1 &
+  local pid="\$!"
+  echo "\$pid" > "\$pid_file"
+  sleep 1
+  if kill -0 "\$pid" 2>/dev/null; then
+    printf '[PrediHermes] started %s (pid=%s, log=%s)\n' "\$name" "\$pid" "\$log_file"
+  else
+    printf '[PrediHermes] failed to start %s, check %s\n' "\$name" "\$log_file" >&2
+    return 1
+  fi
+}
+
+start_service worldosint "$BIN_DIR/predihermes-worldosint"
+if [[ "\$WITH_WS" -eq 1 ]]; then
+  start_service worldosint-ws "$BIN_DIR/predihermes-worldosint-ws"
+fi
+start_service mirofish-backend "$BIN_DIR/predihermes-mirofish-backend"
+if [[ "\$WITH_UI" -eq 1 ]]; then
+  start_service mirofish-ui "$BIN_DIR/predihermes-mirofish-ui"
+fi
+
+printf '\n[PrediHermes] stack status:\n'
+"$BIN_DIR/predihermes-stack-status"
+SCRIPT
+
+  write_script "$BIN_DIR/predihermes-stack-down" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+RUN_DIR="$RUN_DIR"
+
+stop_service() {
+  local name="\$1"
+  local pid_file="\$RUN_DIR/\$name.pid"
+  if [[ ! -f "\$pid_file" ]]; then
+    printf '[PrediHermes] %s not tracked\n' "\$name"
+    return 0
+  fi
+  local pid
+  pid="\$(cat "\$pid_file" 2>/dev/null || true)"
+  if [[ -n "\$pid" ]] && kill -0 "\$pid" 2>/dev/null; then
+    kill "\$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "\$pid" 2>/dev/null || true
+    printf '[PrediHermes] stopped %s (pid=%s)\n' "\$name" "\$pid"
+  else
+    printf '[PrediHermes] cleared stale pid for %s\n' "\$name"
+  fi
+  rm -f "\$pid_file"
+}
+
+stop_service mirofish-ui
+stop_service mirofish-backend
+stop_service worldosint-ws
+stop_service worldosint
+SCRIPT
+
+  write_script "$BIN_DIR/predihermes-stack-status" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+RUN_DIR="$RUN_DIR"
+LOG_DIR="$LOG_DIR"
+
+show_service() {
+  local name="\$1"
+  local pid_file="\$RUN_DIR/\$name.pid"
+  local log_file="\$LOG_DIR/\$name.log"
+  if [[ -f "\$pid_file" ]]; then
+    local pid
+    pid="\$(cat "\$pid_file" 2>/dev/null || true)"
+    if [[ -n "\$pid" ]] && kill -0 "\$pid" 2>/dev/null; then
+      printf '%-18s running  pid=%s  log=%s\n' "\$name" "\$pid" "\$log_file"
+      return 0
+    fi
+    printf '%-18s stale    pid=%s  log=%s\n' "\$name" "\${pid:-unknown}" "\$log_file"
+    return 0
+  fi
+  printf '%-18s stopped  log=%s\n' "\$name" "\$log_file"
+}
+
+show_service worldosint
+show_service worldosint-ws
+show_service mirofish-backend
+show_service mirofish-ui
 SCRIPT
 
   if [[ "$WITH_VIDEO_TRANSCRIBER" -eq 1 || -d "$VIDEO_TRANSCRIBER_DEST" ]]; then
@@ -450,6 +608,9 @@ print_summary() {
     printf '  %s/predihermes-worldosint-ws\n' "$BIN_DIR"
     printf '  %s/predihermes-mirofish-backend\n' "$BIN_DIR"
     printf '  %s/predihermes-mirofish-ui\n' "$BIN_DIR"
+    printf '  %s/predihermes-stack-up\n' "$BIN_DIR"
+    printf '  %s/predihermes-stack-down\n' "$BIN_DIR"
+    printf '  %s/predihermes-stack-status\n' "$BIN_DIR"
     printf '  %s/predihermes-stack-health\n' "$BIN_DIR"
   fi
   if [[ "$WITH_VIDEO_TRANSCRIBER" -eq 1 || -d "$VIDEO_TRANSCRIBER_DEST" ]]; then
@@ -476,6 +637,8 @@ DEST="$HERMES_HOME/skills/research/geopolitical-market-sim"
 STACK_HOME="${PREDIHERMES_HOME:-$HOME/predihermes}"
 COMPANION_DIR="$STACK_HOME/companions"
 BIN_DIR="$STACK_HOME/bin"
+LOG_DIR="$STACK_HOME/logs"
+RUN_DIR="$STACK_HOME/run"
 WORLDOSINT_URL="https://github.com/nativ3ai/worldosint-headless.git"
 MIROFISH_URL="https://github.com/nativ3ai/MiroFish.git"
 VIDEO_TRANSCRIBER_URL="https://github.com/nativ3ai/universal-video-transcriber.git"
@@ -580,6 +743,8 @@ done
 STACK_HOME="$(normalize_path "$STACK_HOME")"
 COMPANION_DIR="$(normalize_path "$COMPANION_DIR")"
 BIN_DIR="$(normalize_path "$BIN_DIR")"
+LOG_DIR="$(normalize_path "$LOG_DIR")"
+RUN_DIR="$(normalize_path "$RUN_DIR")"
 WORLDOSINT_ROOT="$(normalize_path "$WORLDOSINT_ROOT")"
 MIROFISH_ROOT="$(normalize_path "$MIROFISH_ROOT")"
 VIDEO_TRANSCRIBER_ROOT="$(normalize_path "$VIDEO_TRANSCRIBER_ROOT")"

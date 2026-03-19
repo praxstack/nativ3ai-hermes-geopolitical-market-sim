@@ -102,6 +102,9 @@ Default local stack layout:
 │   ├── predihermes-worldosint-ws
 │   ├── predihermes-mirofish-backend
 │   ├── predihermes-mirofish-ui
+│   ├── predihermes-stack-up
+│   ├── predihermes-stack-down
+│   ├── predihermes-stack-status
 │   └── predihermes-stack-health
 └── companions/
     ├── worldosint-headless/
@@ -127,6 +130,26 @@ hermes model
 
 If you use OpenAI Codex through ChatGPT OAuth, select `openai-codex` in `hermes model`.
 
+### MiroFish backend modes
+
+PrediHermes now assumes the MiroFish fork can run either with Zep or with the local SQLite graph backend.
+
+Recommended default:
+
+- `GRAPH_BACKEND=local`
+
+Modes:
+
+- `GRAPH_BACKEND=local`
+  - stores graph state under `backend/uploads/graphs/*.sqlite3`
+  - does not require `ZEP_API_KEY`
+- `GRAPH_BACKEND=auto`
+  - uses Zep only when a Zep key is present
+  - otherwise falls back to local SQLite
+- `GRAPH_BACKEND=zep`
+  - forces the Zep backend
+  - requires `ZEP_API_KEY`
+
 ### MiroFish secrets
 
 Set these in:
@@ -150,6 +173,38 @@ Notes:
 - `GRAPH_BACKEND=local` stores graph state under `backend/uploads/graphs/*.sqlite3`.
 
 ## Start The Stack
+
+### One-command local bring-up
+
+If you used bootstrap, this is the fastest operator path:
+
+```bash
+~/predihermes/bin/predihermes-stack-up
+```
+
+Default behavior:
+
+- starts WorldOSINT
+- starts the WorldOSINT websocket bridge
+- starts the MiroFish backend
+- writes logs to `~/predihermes/logs`
+- tracks PIDs in `~/predihermes/run`
+
+Optional flags:
+
+```bash
+~/predihermes/bin/predihermes-stack-up --with-ui
+~/predihermes/bin/predihermes-stack-up --without-ws
+~/predihermes/bin/predihermes-stack-up --force-restart
+```
+
+Useful follow-up commands:
+
+```bash
+~/predihermes/bin/predihermes-stack-status
+~/predihermes/bin/predihermes-stack-health
+~/predihermes/bin/predihermes-stack-down
+```
 
 ### WorldOSINT
 
@@ -209,6 +264,7 @@ FLASK_DEBUG=False npm run backend
 Helper-based verification:
 
 ```bash
+~/predihermes/bin/predihermes-stack-status
 ~/predihermes/bin/predihermes-stack-health
 ~/predihermes/bin/predihermes health
 ~/predihermes/bin/predihermes list-worldosint-modules
@@ -297,6 +353,7 @@ hermes -s geopolitical-market-sim
 
 Natural prompt examples:
 
+- `Use PrediHermes stack-up flow and bring up the local services required for a run, then verify health.`
 - `Use PrediHermes list-worldosint-modules and suggest 6 modules for maritime risk.`
 - `Use PrediHermes update-topic iran-conflict: add module maritime_snapshot and set max rounds to 28.`
 - `Use PrediHermes plan-tracked iran-conflict and tell me if the feed is good enough.`

@@ -16,6 +16,11 @@ Command policy:
 - Prefer `predihermes <command> ...` if available on PATH.
 - Fallback to `python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py <command> ...`.
 - Do not stop after one failed shorthand attempt; retry with the full script path.
+- If the local stack was bootstrapped, also prefer these helper launchers when you need services:
+  - `~/predihermes/bin/predihermes-stack-up`
+  - `~/predihermes/bin/predihermes-stack-status`
+  - `~/predihermes/bin/predihermes-stack-health`
+  - `~/predihermes/bin/predihermes-stack-down`
 
 ## What it does
 
@@ -48,6 +53,36 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 
 If `MiroFish` is down, do not claim the simulation ran. If `WorldOSINT` is down, do not claim the packet is current.
 If MiroFish uses `GRAPH_BACKEND=local`, that is valid and expected. Only ask for `ZEP_API_KEY` when the operator explicitly chose `GRAPH_BACKEND=zep`.
+
+If health fails because the local services are not running and the helper launchers exist, bring them up with:
+
+```bash
+~/predihermes/bin/predihermes-stack-up
+~/predihermes/bin/predihermes-stack-status
+~/predihermes/bin/predihermes-stack-health
+```
+
+Use individual launchers only when the user explicitly wants one component started separately:
+
+```bash
+~/predihermes/bin/predihermes-worldosint
+~/predihermes/bin/predihermes-worldosint-ws
+~/predihermes/bin/predihermes-mirofish-backend
+~/predihermes/bin/predihermes-mirofish-ui
+```
+
+When the user asks you to start or stop the stack from Hermes:
+
+1. run `~/predihermes/bin/predihermes-stack-up` to start required services
+2. run `~/predihermes/bin/predihermes-stack-status` to confirm tracked processes
+3. run `~/predihermes/bin/predihermes-stack-health` to confirm the pipeline can talk to them
+4. only then proceed with topic planning or simulation
+
+When the user asks to stop the local stack:
+
+```bash
+~/predihermes/bin/predihermes-stack-down
+```
 
 ## Track a topic
 
@@ -189,6 +224,7 @@ Per-run overrides:
 - `--require-feed-confirmation`
 
 Natural Hermes ask patterns for module control:
+- "Use PrediHermes and start the local stack, then tell me if WorldOSINT and MiroFish are healthy."
 - "Use PrediHermes list-worldosint-modules and propose the best modules for Hormuz risk."
 - "Use PrediHermes update-topic iran-conflict and add <module>, remove <module>, then show dashboard."
 - "Use PrediHermes plan-tracked iran-conflict and confirm if feed quality is good enough."
