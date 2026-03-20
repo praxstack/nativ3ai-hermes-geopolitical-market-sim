@@ -2,6 +2,9 @@
 
 PrediHermes is a Hermes skill for geopolitical market forecasting. It wires together:
 
+<!-- MARKEE:START:0xf26a8e70ac16626400556bd21c1de5ef46e415a6 -->
+<!-- MARKEE:END:0xf26a8e70ac16626400556bd21c1de5ef46e415a6 -->
+
 - WorldOSINT headless feeds for modular OSINT ingestion
 - Polymarket Gamma/CLOB for open market discovery and pricing
 - MiroFish for multi-agent simulation and counterfactual branches
