@@ -2,8 +2,8 @@
 
 PrediHermes is a Hermes skill for geopolitical market forecasting. It wires together:
 
-<!-- MARKEE:START:0xf26a8e70ac16626400556bd21c1de5ef46e415a6 -->
-<!-- MARKEE:END:0xf26a8e70ac16626400556bd21c1de5ef46e415a6 -->
+<!-- MARKEE:START:0x4dbc05550c15d6041f5738c50dffd8b7e64137e2 -->
+<!-- MARKEE:END:0x4dbc05550c15d6041f5738c50dffd8b7e64137e2 -->
 
 - WorldOSINT headless feeds for modular OSINT ingestion
 - Polymarket Gamma/CLOB for open market discovery and pricing
@@ -75,7 +75,7 @@ One-command installer:
 
 ```bash
 brew tap nativ3ai/prediup
-brew install prediup
+brew install predihermes
 prediup install
 ```
 
