@@ -9,6 +9,17 @@ PrediHermes is the public name of the `geopolitical-market-sim` skill.
 
 Use this skill for the local WorldOSINT -> Polymarket -> MiroFish workflow.
 
+Installation awareness:
+- If the operator asks for the fully local CLI edition, prefer:
+  - `prediup install`
+  - or `./install.sh --bootstrap-local`
+- The fully local edition means:
+  - Ollama-backed MiroFish
+  - `GRAPH_BACKEND=local`
+  - WorldOSINT headless only
+  - MiroFish backend only
+  - no Zep and no MiroFish UI required
+
 Helper script path:
 `~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py`
 
@@ -17,6 +28,9 @@ Command policy:
 - Fallback to `python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py <command> ...`.
 - Do not stop after one failed shorthand attempt; retry with the full script path.
 - If the local stack was bootstrapped, also prefer these helper launchers when you need services:
+  - `~/predihermes/bin/predihermes-local-up`
+  - `~/predihermes/bin/predihermes-local-status`
+  - `~/predihermes/bin/predihermes-local-health`
   - `~/predihermes/bin/predihermes-stack-up`
   - `~/predihermes/bin/predihermes-stack-status`
   - `~/predihermes/bin/predihermes-stack-health`
@@ -56,18 +70,25 @@ If MiroFish uses `GRAPH_BACKEND=local`, that is valid and expected. Only ask for
 
 Backend selection rule:
 - prefer local graph mode unless the user explicitly asks for Zep
-- if the user says they want the cheaper/simpler local setup, use `GRAPH_BACKEND=local`
+- if the user says they want the cheaper/simpler fully local setup, use `GRAPH_BACKEND=local`
+- if the user says they want no external LLM keys, prefer the local edition with Ollama
 - if Zep returns quota/auth/availability errors, recommend switching MiroFish to `GRAPH_BACKEND=local` and restarting the backend
 - do not block simulation work on missing `ZEP_API_KEY` if local graph mode is available
 - only treat `ZEP_API_KEY` as required when `GRAPH_BACKEND=zep`
+- when the local edition is installed, assume `LLM_API_KEY=ollama` and `LLM_BASE_URL=http://127.0.0.1:11434/v1` unless the operator says otherwise
 
 If health fails because the local services are not running and the helper launchers exist, bring them up with:
 
 ```bash
+~/predihermes/bin/predihermes-local-up
+~/predihermes/bin/predihermes-local-status
+~/predihermes/bin/predihermes-local-health
 ~/predihermes/bin/predihermes-stack-up
 ~/predihermes/bin/predihermes-stack-status
 ~/predihermes/bin/predihermes-stack-health
 ```
+
+Prefer the `predihermes-local-*` aliases when they exist. They are the simplest path for the local edition.
 
 Use individual launchers only when the user explicitly wants one component started separately:
 
@@ -77,6 +98,8 @@ Use individual launchers only when the user explicitly wants one component start
 ~/predihermes/bin/predihermes-mirofish-backend
 ~/predihermes/bin/predihermes-mirofish-ui
 ```
+
+The MiroFish UI is optional. Do not require it for local edition installs or counterfactual workflows.
 
 When the user asks you to start or stop the stack from Hermes:
 

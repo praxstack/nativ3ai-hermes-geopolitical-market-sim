@@ -48,6 +48,7 @@ This repo is the Hermes skill and bootstrap layer. The WorldOSINT and MiroFish r
 - Node.js `18+`
 - `git`
 - `npm`
+- `ollama` only if you want the fully local edition without external model keys
 
 Check the host before installing:
 
@@ -56,6 +57,40 @@ Check the host before installing:
 ```
 
 ## Install
+
+### PrediHermes Local
+
+This is the recommended install if you want the slim CLI-first stack:
+
+- local SQLite graph backend
+- local Ollama model for MiroFish
+- WorldOSINT headless only
+- MiroFish backend only
+- no Zep
+- no MiroFish frontend required
+- no external LLM key required
+
+One-command installer:
+
+```bash
+pipx install git+https://github.com/nativ3ai/prediup.git
+prediup install
+```
+
+Direct repo path:
+
+```bash
+git clone https://github.com/nativ3ai/hermes-geopolitical-market-sim.git
+cd hermes-geopolitical-market-sim
+./install.sh --bootstrap-local
+```
+
+Common local-edition variants:
+
+```bash
+./install.sh --bootstrap-local --ollama-model qwen2.5:3b
+./install.sh --bootstrap-local --with-video-transcriber
+```
 
 ### Skill only
 
@@ -71,7 +106,9 @@ Installed path:
 
 - `~/.hermes/skills/research/geopolitical-market-sim`
 
-### Full local stack
+### PrediHermes Full
+
+This is the legacy/full companion-stack bootstrap. Keep this if you want the richer multi-repo setup and optional UI paths.
 
 This installs the skill, clones WorldOSINT and MiroFish, installs their dependencies, and writes helper launchers.
 
@@ -119,9 +156,20 @@ The installer also writes non-secret local stack pointers into:
 
 - `~/.hermes/.env`
 
+Local-edition extras:
+
+- writes `LLM_API_KEY=ollama`
+- writes `LLM_BASE_URL=http://127.0.0.1:11434/v1`
+- writes `LLM_MODEL_NAME=<selected model>`
+- writes `GRAPH_BACKEND=local`
+- installs helper aliases:
+  - `predihermes-local-up`
+  - `predihermes-local-status`
+  - `predihermes-local-health`
+
 ## Required Manual Configuration
 
-PrediHermes can bootstrap the stack, but it does not invent your model credentials.
+PrediHermes can bootstrap the stack, but configuration differs by profile.
 
 ### Hermes provider
 
@@ -132,6 +180,29 @@ hermes model
 ```
 
 If you use OpenAI Codex through ChatGPT OAuth, select `openai-codex` in `hermes model`.
+
+### Local edition model defaults
+
+If you used `--bootstrap-local`, the installer sets MiroFish to Ollama automatically:
+
+- `LLM_API_KEY=ollama`
+- `LLM_BASE_URL=http://127.0.0.1:11434/v1`
+- `LLM_MODEL_NAME=qwen2.5:7b` by default
+- `GRAPH_BACKEND=local`
+
+By default the installer will:
+
+- install Ollama on macOS if Homebrew is available
+- start the Ollama daemon if needed
+- pull the requested model if it is missing
+
+Use these flags if you want a different local profile:
+
+```bash
+./install.sh --bootstrap-local --ollama-model qwen2.5:3b
+./install.sh --bootstrap-local --skip-ollama-pull
+./install.sh --bootstrap-local --ollama-base-url http://127.0.0.1:11434/v1
+```
 
 ### MiroFish backend modes
 
@@ -159,12 +230,14 @@ Set these in:
 
 - `~/predihermes/companions/MiroFish/.env`
 
-Required:
+Required for the full / legacy profile:
 
 - `LLM_API_KEY`
 - `LLM_BASE_URL`
 - `LLM_MODEL_NAME`
 - `GRAPH_BACKEND=local` for the default local SQLite graph store
+
+For the local edition, the installer writes those values for you and no external API key is required.
 
 Optional:
 
@@ -179,7 +252,15 @@ Notes:
 
 ### One-command local bring-up
 
-If you used bootstrap, this is the fastest operator path:
+If you used `--bootstrap-local`, this is the cleanest operator path:
+
+```bash
+~/predihermes/bin/predihermes-local-up
+~/predihermes/bin/predihermes-local-status
+~/predihermes/bin/predihermes-local-health
+```
+
+If you used the full / legacy bootstrap, or want the lower-level commands, use:
 
 ```bash
 ~/predihermes/bin/predihermes-stack-up
@@ -187,11 +268,12 @@ If you used bootstrap, this is the fastest operator path:
 
 Default behavior:
 
-- starts WorldOSINT
+- starts WorldOSINT headless API
 - starts the WorldOSINT websocket bridge
 - starts the MiroFish backend
 - writes logs to `~/predihermes/logs`
 - tracks PIDs in `~/predihermes/run`
+- does not require the MiroFish frontend
 
 Optional flags:
 
@@ -242,12 +324,17 @@ If you used bootstrap:
 
 ```bash
 ~/predihermes/bin/predihermes-mirofish-backend
-~/predihermes/bin/predihermes-mirofish-ui
 ```
 
 Default API:
 
 - `http://127.0.0.1:5001`
+
+Optional UI helper still exists for the full / legacy stack:
+
+```bash
+~/predihermes/bin/predihermes-mirofish-ui
+```
 
 Manual MiroFish startup remains:
 
@@ -255,11 +342,9 @@ Manual MiroFish startup remains:
 git clone https://github.com/nativ3ai/MiroFish.git
 cd MiroFish
 cp .env.example .env
-echo 'GRAPH_BACKEND=local' >> .env
-npm install
-cd frontend && npm install && cd ..
+printf 'LLM_API_KEY=ollama\nLLM_BASE_URL=http://127.0.0.1:11434/v1\nLLM_MODEL_NAME=qwen2.5:7b\nGRAPH_BACKEND=local\n' >> .env
 cd backend && uv sync && cd ..
-FLASK_DEBUG=False npm run backend
+FLASK_DEBUG=False uv run --directory backend python run.py
 ```
 
 ## Verify
@@ -462,6 +547,10 @@ Uninstall:
   - Check `~/predihermes/companions/MiroFish/.env` and verify `LLM_*` values are set.
   - If you do not use Zep, keep `GRAPH_BACKEND=local`.
   - If you do use Zep, set `GRAPH_BACKEND=zep` and provide `ZEP_API_KEY`.
+- Local edition cannot talk to Ollama
+  - Run `ollama list` and confirm the selected model exists.
+  - Rerun `./install.sh --bootstrap-local` or `prediup install`.
+  - Check `~/predihermes/bin/predihermes-local-health`.
 - WorldOSINT or MiroFish health checks fail
   - Verify both services are running and the URLs in `~/.hermes/.env` match your local stack.
 - Optional transcriber fails because `ffmpeg` or `yt-dlp` is missing

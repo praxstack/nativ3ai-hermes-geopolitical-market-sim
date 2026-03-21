@@ -8,6 +8,7 @@ Usage:
 
 Core options:
   --bootstrap-stack         Clone/install WorldOSINT + MiroFish companions and generate launcher scripts
+  --bootstrap-local         Install the local all-in-one headless edition (implies --bootstrap-stack)
   --with-video-transcriber  Also clone/install the optional universal video transcriber skill
   --doctor                  Check host prerequisites and current PrediHermes installation state
   --with-launchd            Also install the optional PrediHermes launchd agents
@@ -26,10 +27,16 @@ Bootstrap options:
   --skip-mirofish-install   Clone/reuse MiroFish but skip dependency install
   --skip-video-transcriber-install Clone/reuse video transcriber but skip skill install
   --skip-hermes-env         Do not write WORLDOSINT_BASE_URL / MIROFISH_* entries into ~/.hermes/.env
+  --ollama-model MODEL      Ollama model for local edition (default: qwen2.5:7b)
+  --ollama-base-url URL     Ollama OpenAI-compatible base URL (default: http://127.0.0.1:11434/v1)
+  --skip-ollama-install     Do not auto-install/start Ollama when using --bootstrap-local
+  --skip-ollama-pull        Do not auto-pull the configured Ollama model
 
 Examples:
   ./install.sh
   ./install.sh --bootstrap-stack
+  ./install.sh --bootstrap-local
+  ./install.sh --bootstrap-local --ollama-model qwen2.5:3b
   ./install.sh --with-video-transcriber
   ./install.sh --bootstrap-stack --with-video-transcriber
   ./install.sh --bootstrap-stack --with-launchd
@@ -150,8 +157,14 @@ doctor() {
   local missing=0
   local companions_line="disabled"
   local video_line="disabled"
+  local profile_line="skill-only"
   [[ "$BOOTSTRAP_STACK" -eq 1 ]] && companions_line="enabled"
   [[ "$WITH_VIDEO_TRANSCRIBER" -eq 1 ]] && video_line="enabled"
+  if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+    profile_line="local"
+  elif [[ "$BOOTSTRAP_STACK" -eq 1 ]]; then
+    profile_line="full"
+  fi
 
   say "Doctor"
   for cmd in git python3; do
@@ -196,11 +209,31 @@ doctor() {
   fi
 
   printf 'INFO bootstrap_stack %s\n' "$companions_line"
+  printf 'INFO install_profile %s\n' "$profile_line"
   printf 'INFO video_transcriber %s\n' "$video_line"
   printf 'INFO worldosint_root %s\n' "$WORLDOSINT_ROOT"
   printf 'INFO mirofish_root %s\n' "$MIROFISH_ROOT"
   printf 'INFO video_transcriber_root %s\n' "$VIDEO_TRANSCRIBER_ROOT"
   printf 'INFO helper_bin %s\n' "$BIN_DIR"
+  if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+    printf 'INFO ollama_base_url %s\n' "$OLLAMA_BASE_URL"
+    printf 'INFO ollama_model %s\n' "$OLLAMA_MODEL"
+    if has_cmd ollama; then
+      printf 'OK   ollama\n'
+      if ollama list >/dev/null 2>&1; then
+        printf 'OK   ollama_daemon\n'
+        if ollama list | awk 'NR>1 {print $1}' | grep -Fxq "$OLLAMA_MODEL"; then
+          printf 'OK   ollama_model:%s\n' "$OLLAMA_MODEL"
+        else
+          printf 'WARN ollama_model:%s\n' "$OLLAMA_MODEL"
+        fi
+      else
+        printf 'WARN ollama_daemon\n'
+      fi
+    else
+      printf 'WARN ollama\n'
+    fi
+  fi
 
   if [[ "$WITH_VIDEO_TRANSCRIBER" -eq 1 || -d "$VIDEO_TRANSCRIBER_DEST" ]]; then
     for cmd in ffmpeg yt-dlp; do
@@ -228,6 +261,101 @@ require_hermes() {
     return 0
   fi
   fail "Hermes Agent is not installed. Install Hermes first, then rerun ./install.sh"
+}
+
+ollama_api_root() {
+  printf '%s\n' "${OLLAMA_BASE_URL%/v1}"
+}
+
+ollama_is_local() {
+  case "$OLLAMA_BASE_URL" in
+    http://127.0.0.1:*|http://localhost:*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+wait_for_ollama_ready() {
+  local api_root="$1"
+  local attempts="${2:-20}"
+  local i
+  for ((i = 0; i < attempts; i++)); do
+    if curl -fsS "$api_root/api/tags" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+install_ollama_if_needed() {
+  has_cmd ollama && return 0
+  [[ "$SKIP_OLLAMA_INSTALL" -eq 0 ]] || fail "Ollama is required for --bootstrap-local"
+
+  if has_cmd brew; then
+    say "Installing Ollama with Homebrew"
+    brew install ollama
+    return 0
+  fi
+
+  if has_cmd apt-get; then
+    fail "Auto-install for Ollama via apt-get is not implemented here. Install Ollama manually, then rerun --bootstrap-local."
+  fi
+
+  fail "Ollama is required for --bootstrap-local. Install it from https://ollama.com/ and rerun."
+}
+
+ensure_ollama_ready() {
+  local api_root
+  api_root="$(ollama_api_root)"
+
+  if ! ollama_is_local; then
+    say "Using remote Ollama-compatible base URL: $OLLAMA_BASE_URL"
+    return 0
+  fi
+
+  install_ollama_if_needed
+
+  if wait_for_ollama_ready "$api_root" 2; then
+    return 0
+  fi
+
+  if has_cmd brew; then
+    say "Starting Ollama with brew services"
+    brew services start ollama >/dev/null 2>&1 || true
+  fi
+
+  if wait_for_ollama_ready "$api_root" 6; then
+    return 0
+  fi
+
+  if [[ ! -f "$RUN_DIR/ollama.pid" ]] || ! kill -0 "$(cat "$RUN_DIR/ollama.pid" 2>/dev/null || true)" 2>/dev/null; then
+    mkdir -p "$RUN_DIR" "$LOG_DIR"
+    say "Starting Ollama in the background"
+    nohup ollama serve >>"$LOG_DIR/ollama.log" 2>&1 &
+    echo "$!" > "$RUN_DIR/ollama.pid"
+  fi
+
+  wait_for_ollama_ready "$api_root" 20 || fail "Ollama did not become ready at $api_root"
+}
+
+ensure_ollama_model() {
+  [[ "$SKIP_OLLAMA_PULL" -eq 0 ]] || return 0
+  has_cmd ollama || return 0
+  ollama list | awk 'NR>1 {print $1}' | grep -Fxq "$OLLAMA_MODEL" && return 0
+  say "Pulling Ollama model $OLLAMA_MODEL"
+  ollama pull "$OLLAMA_MODEL"
+}
+
+configure_local_mirofish_env() {
+  local env_file="$1"
+  upsert_env_key "$env_file" "GRAPH_BACKEND" "local"
+  upsert_env_key "$env_file" "LLM_API_KEY" "ollama"
+  upsert_env_key "$env_file" "LLM_BASE_URL" "$OLLAMA_BASE_URL"
+  upsert_env_key "$env_file" "LLM_MODEL_NAME" "$OLLAMA_MODEL"
 }
 
 install_skill() {
@@ -275,7 +403,7 @@ install_worldosint() {
     has_cmd npm || fail "npm is required to bootstrap WorldOSINT"
     has_cmd node || fail "node is required to bootstrap WorldOSINT"
     say "Installing WorldOSINT dependencies"
-    (cd "$WORLDOSINT_ROOT" && npm install)
+    (cd "$WORLDOSINT_ROOT" && npm install --no-fund --no-audit)
   else
     say "Skipping WorldOSINT dependency install"
   fi
@@ -287,16 +415,15 @@ install_mirofish() {
     cp "$MIROFISH_ROOT/.env.example" "$MIROFISH_ROOT/.env"
     say "Created $MIROFISH_ROOT/.env from .env.example"
   fi
-  upsert_env_key "$MIROFISH_ROOT/.env" "GRAPH_BACKEND" "local"
+  if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+    ensure_ollama_ready
+    configure_local_mirofish_env "$MIROFISH_ROOT/.env"
+    ensure_ollama_model
+  else
+    upsert_env_key "$MIROFISH_ROOT/.env" "GRAPH_BACKEND" "local"
+  fi
 
   if [[ "$SKIP_MIROFISH_INSTALL" -eq 0 ]]; then
-    has_cmd npm || fail "npm is required to bootstrap MiroFish"
-    has_cmd node || fail "node is required to bootstrap MiroFish"
-    say "Installing MiroFish root dependencies"
-    (cd "$MIROFISH_ROOT" && npm install)
-    say "Installing MiroFish frontend dependencies"
-    (cd "$MIROFISH_ROOT/frontend" && npm install)
-
     if has_cmd uv; then
       say "Syncing MiroFish backend with uv"
       (cd "$MIROFISH_ROOT/backend" && uv sync)
@@ -304,6 +431,17 @@ install_mirofish() {
       say "uv not found; using backend/.venv fallback"
       python3 -m venv "$MIROFISH_ROOT/backend/.venv"
       "$MIROFISH_ROOT/backend/.venv/bin/pip" install -r "$MIROFISH_ROOT/backend/requirements.txt"
+    fi
+
+    if [[ "$LOCAL_EDITION" -eq 0 ]]; then
+      has_cmd npm || fail "npm is required to bootstrap MiroFish"
+      has_cmd node || fail "node is required to bootstrap MiroFish"
+      say "Installing MiroFish root dependencies"
+      (cd "$MIROFISH_ROOT" && npm install --no-fund --no-audit)
+      say "Installing MiroFish frontend dependencies"
+      (cd "$MIROFISH_ROOT/frontend" && npm install --no-fund --no-audit)
+    else
+      say "Local edition selected; skipping MiroFish frontend dependency install"
     fi
   else
     say "Skipping MiroFish dependency install"
@@ -367,12 +505,12 @@ SCRIPT
   write_script "$BIN_DIR/predihermes-mirofish-backend" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
-if command -v uv >/dev/null 2>&1; then
-  cd "$MIROFISH_ROOT"
-  exec env FLASK_DEBUG=False npm run backend
-elif [[ -x "$MIROFISH_ROOT/backend/.venv/bin/python3" ]]; then
+if [[ -x "$MIROFISH_ROOT/backend/.venv/bin/python3" ]]; then
   cd "$MIROFISH_ROOT/backend"
   exec env FLASK_DEBUG=False ./\.venv/bin/python3 run.py
+elif command -v uv >/dev/null 2>&1; then
+  cd "$MIROFISH_ROOT/backend"
+  exec env FLASK_DEBUG=False uv run python run.py
 else
   cd "$MIROFISH_ROOT/backend"
   exec env FLASK_DEBUG=False python3 run.py
@@ -382,8 +520,8 @@ SCRIPT
   write_script "$BIN_DIR/predihermes-mirofish-ui" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$MIROFISH_ROOT"
-exec env MIROFISH_FRONTEND_PORT="\${MIROFISH_FRONTEND_PORT:-3001}" FLASK_DEBUG=False npm run frontend
+cd "$MIROFISH_ROOT/frontend"
+exec env MIROFISH_FRONTEND_PORT="\${MIROFISH_FRONTEND_PORT:-3001}" npm run dev -- --host 127.0.0.1 --port "\${MIROFISH_FRONTEND_PORT:-3001}"
 SCRIPT
 
   write_script "$BIN_DIR/predihermes-stack-health" <<SCRIPT
@@ -548,6 +686,34 @@ show_service mirofish-backend
 show_service mirofish-ui
 SCRIPT
 
+  if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+    write_script "$BIN_DIR/predihermes-local-up" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$BIN_DIR/predihermes-stack-up" "\$@"
+SCRIPT
+
+    write_script "$BIN_DIR/predihermes-local-status" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$BIN_DIR/predihermes-stack-status" "\$@"
+SCRIPT
+
+    write_script "$BIN_DIR/predihermes-local-health" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v ollama >/dev/null 2>&1; then
+  printf '[PrediHermes] Ollama model check: '
+  if ollama list | awk 'NR>1 {print \$1}' | grep -Fxq "$OLLAMA_MODEL"; then
+    printf 'ok (%s)\n' "$OLLAMA_MODEL"
+  else
+    printf 'missing (%s)\n' "$OLLAMA_MODEL"
+  fi
+fi
+exec "$BIN_DIR/predihermes-stack-health" "\$@"
+SCRIPT
+  fi
+
   if [[ "$WITH_VIDEO_TRANSCRIBER" -eq 1 || -d "$VIDEO_TRANSCRIBER_DEST" ]]; then
     write_script "$BIN_DIR/predihermes-transcribe-url" <<SCRIPT
 #!/usr/bin/env bash
@@ -592,6 +758,10 @@ print_summary() {
   printf '\n'
   printf 'Skill path: %s\n' "$DEST"
   printf 'Helper bin: %s\n' "$BIN_DIR"
+  if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+    printf 'Profile: local edition\n'
+    printf 'Ollama:  %s (%s)\n' "$OLLAMA_MODEL" "$OLLAMA_BASE_URL"
+  fi
   if [[ "$BOOTSTRAP_STACK" -eq 1 ]]; then
     printf 'WorldOSINT: %s\n' "$WORLDOSINT_ROOT"
     printf 'MiroFish:   %s\n' "$MIROFISH_ROOT"
@@ -607,11 +777,17 @@ print_summary() {
     printf '  %s/predihermes-worldosint\n' "$BIN_DIR"
     printf '  %s/predihermes-worldosint-ws\n' "$BIN_DIR"
     printf '  %s/predihermes-mirofish-backend\n' "$BIN_DIR"
-    printf '  %s/predihermes-mirofish-ui\n' "$BIN_DIR"
     printf '  %s/predihermes-stack-up\n' "$BIN_DIR"
     printf '  %s/predihermes-stack-down\n' "$BIN_DIR"
     printf '  %s/predihermes-stack-status\n' "$BIN_DIR"
     printf '  %s/predihermes-stack-health\n' "$BIN_DIR"
+    if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+      printf '  %s/predihermes-local-up\n' "$BIN_DIR"
+      printf '  %s/predihermes-local-status\n' "$BIN_DIR"
+      printf '  %s/predihermes-local-health\n' "$BIN_DIR"
+    else
+      printf '  %s/predihermes-mirofish-ui\n' "$BIN_DIR"
+    fi
   fi
   if [[ "$WITH_VIDEO_TRANSCRIBER" -eq 1 || -d "$VIDEO_TRANSCRIBER_DEST" ]]; then
     printf '  %s/predihermes-transcribe-url "<url>"\n' "$BIN_DIR"
@@ -620,12 +796,21 @@ print_summary() {
   printf '  hermes -s geopolitical-market-sim\n'
   printf '\n'
   if [[ "$BOOTSTRAP_STACK" -eq 1 ]]; then
-    printf 'Before running simulations, set MiroFish keys in %s/.env:\n' "$MIROFISH_ROOT"
-    printf '  LLM_API_KEY\n'
-    printf '  LLM_BASE_URL\n'
-    printf '  LLM_MODEL_NAME\n'
-    printf '  GRAPH_BACKEND=local   (default written by installer)\n'
-    printf '  ZEP_API_KEY           (only if you switch GRAPH_BACKEND=zep)\n'
+    if [[ "$LOCAL_EDITION" -eq 1 ]]; then
+      printf 'Local edition wrote Ollama defaults into %s/.env:\n' "$MIROFISH_ROOT"
+      printf '  LLM_API_KEY=ollama\n'
+      printf '  LLM_BASE_URL=%s\n' "$OLLAMA_BASE_URL"
+      printf '  LLM_MODEL_NAME=%s\n' "$OLLAMA_MODEL"
+      printf '  GRAPH_BACKEND=local\n'
+      printf 'If you later switch to Zep or a cloud model, edit that file directly.\n'
+    else
+      printf 'Before running simulations, set MiroFish keys in %s/.env:\n' "$MIROFISH_ROOT"
+      printf '  LLM_API_KEY\n'
+      printf '  LLM_BASE_URL\n'
+      printf '  LLM_MODEL_NAME\n'
+      printf '  GRAPH_BACKEND=local   (default written by installer)\n'
+      printf '  ZEP_API_KEY           (only if you switch GRAPH_BACKEND=zep)\n'
+    fi
     printf '\n'
   fi
   printf 'If %s is not on PATH, run the commands with the full path shown above.\n' "$BIN_DIR"
@@ -647,6 +832,7 @@ MIROFISH_ROOT="$COMPANION_DIR/MiroFish"
 VIDEO_TRANSCRIBER_ROOT="$COMPANION_DIR/universal-video-transcriber"
 VIDEO_TRANSCRIBER_DEST="$HERMES_HOME/skills/research/video-url-transcriber"
 BOOTSTRAP_STACK=0
+LOCAL_EDITION=0
 WITH_VIDEO_TRANSCRIBER=0
 WITH_LAUNCHD=0
 DOCTOR_ONLY=0
@@ -654,11 +840,19 @@ SKIP_HERMES_ENV=0
 SKIP_WORLDOSINT_INSTALL=0
 SKIP_MIROFISH_INSTALL=0
 SKIP_VIDEO_TRANSCRIBER_INSTALL=0
+SKIP_OLLAMA_INSTALL=0
+SKIP_OLLAMA_PULL=0
+OLLAMA_MODEL="qwen2.5:7b"
+OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434/v1}"
 LAUNCHD_ARGS=()
 
 while (($#)); do
   case "$1" in
     --bootstrap-stack)
+      BOOTSTRAP_STACK=1
+      ;;
+    --bootstrap-local)
+      LOCAL_EDITION=1
       BOOTSTRAP_STACK=1
       ;;
     --with-video-transcriber)
@@ -713,6 +907,16 @@ while (($#)); do
       [[ $# -gt 0 ]] || fail "--bin-dir requires a value"
       BIN_DIR="$1"
       ;;
+    --ollama-model)
+      shift
+      [[ $# -gt 0 ]] || fail "--ollama-model requires a value"
+      OLLAMA_MODEL="$1"
+      ;;
+    --ollama-base-url)
+      shift
+      [[ $# -gt 0 ]] || fail "--ollama-base-url requires a value"
+      OLLAMA_BASE_URL="$1"
+      ;;
     --skip-hermes-env)
       SKIP_HERMES_ENV=1
       ;;
@@ -724,6 +928,12 @@ while (($#)); do
       ;;
     --skip-video-transcriber-install)
       SKIP_VIDEO_TRANSCRIBER_INSTALL=1
+      ;;
+    --skip-ollama-install)
+      SKIP_OLLAMA_INSTALL=1
+      ;;
+    --skip-ollama-pull)
+      SKIP_OLLAMA_PULL=1
       ;;
     --help|-h)
       usage
