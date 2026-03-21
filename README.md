@@ -74,7 +74,8 @@ This is the recommended install if you want the slim CLI-first stack:
 One-command installer:
 
 ```bash
-pipx install git+https://github.com/nativ3ai/prediup.git
+brew tap nativ3ai/prediup
+brew install prediup
 prediup install
 ```
 
