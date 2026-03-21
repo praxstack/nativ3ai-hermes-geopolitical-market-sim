@@ -37,6 +37,7 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket discovery -> seed pack
 
 - WorldOSINT headless: https://github.com/nativ3ai/worldosint-headless
 - MiroFish fork used for this workflow: https://github.com/nativ3ai/MiroFish
+- PrediHermes local installer: https://github.com/nativ3ai/prediup
 - Optional universal transcriber add-on: https://github.com/nativ3ai/universal-video-transcriber
 
 This repo is the Hermes skill and bootstrap layer. The WorldOSINT and MiroFish repos remain separate companions.
