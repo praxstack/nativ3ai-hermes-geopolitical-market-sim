@@ -3,6 +3,9 @@
 PrediHermes is a Hermes skill for geopolitical market forecasting. It wires together:
 
 <!-- MARKEE:START:0x4dbc05550c15d6041f5738c50dffd8b7e64137e2 -->
+> 🪧 **[Markee](https://markee.xyz/ecosystem/platforms/github/0x4dbc05550c15d6041f5738c50dffd8b7e64137e2)** — *This space is available.*
+>
+> *Be the first to buy a message for 0.001 ETH on the [Markee App](https://markee.xyz/ecosystem/platforms/github/0x4dbc05550c15d6041f5738c50dffd8b7e64137e2).*
 <!-- MARKEE:END:0x4dbc05550c15d6041f5738c50dffd8b7e64137e2 -->
 
 - WorldOSINT headless feeds for modular OSINT ingestion
