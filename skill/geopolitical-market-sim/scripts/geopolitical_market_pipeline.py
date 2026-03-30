@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import math
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -15,18 +17,88 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote
 
-
-def _prefer_local_venv_python() -> None:
-    here = Path(__file__).resolve()
-    venv_python = here.parent.parent / ".venv" / "bin" / "python3"
-    if not venv_python.exists():
-        return
-    if Path(sys.executable).resolve() == venv_python.resolve():
-        return
-    os.execv(str(venv_python), [str(venv_python), str(here), *sys.argv[1:]])
+def resolve_pipeline_root(script_path: Path) -> Path:
+    candidates = [script_path.parent, script_path.parent.parent]
+    for candidate in candidates:
+        if (candidate / "tools" / "predihermes" / "review.py").exists():
+            return candidate
+    return script_path.parent
 
 
-_prefer_local_venv_python()
+def resolve_mirofish_source_root(preferred: Optional[str] = None) -> Path:
+    candidates: List[Path] = []
+    if preferred:
+        candidates.append(Path(preferred).expanduser())
+    env_root = os.getenv("MIROFISH_ROOT")
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    candidates.extend(
+        [
+            Path.cwd(),
+            Path.home() / "Downloads" / "MiroFish-main",
+            Path.home() / "MiroFish-main",
+            Path("/Users/native/Downloads/MiroFish-main"),
+        ]
+    )
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (resolved / "backend" / "app").exists():
+            return resolved
+    return resolve_pipeline_root(Path(__file__).resolve())
+
+
+PIPELINE_ROOT = resolve_pipeline_root(Path(__file__).resolve())
+MIROFISH_SOURCE_ROOT = resolve_mirofish_source_root(str(PIPELINE_ROOT))
+for import_root in (PIPELINE_ROOT, MIROFISH_SOURCE_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
+
+def prefer_local_venv_python(root: Path) -> None:
+    root_candidates: List[Path] = []
+    env_root = os.getenv("MIROFISH_ROOT")
+    if env_root:
+        root_candidates.append(Path(env_root).expanduser())
+    root_candidates.extend(
+        [
+            Path.cwd(),
+            Path.home() / "Downloads" / "MiroFish-main",
+            Path.home() / "MiroFish-main",
+            Path("/Users/native/Downloads/MiroFish-main"),
+            root,
+        ]
+    )
+
+    seen: set[Path] = set()
+    for candidate_root in root_candidates:
+        resolved_root = candidate_root.expanduser().resolve()
+        if resolved_root in seen:
+            continue
+        seen.add(resolved_root)
+        candidates = [
+            resolved_root / ".venv" / "bin" / "python3",
+            resolved_root / ".venv" / "bin" / "python",
+            resolved_root / "backend" / ".venv" / "bin" / "python3",
+            resolved_root / "backend" / ".venv" / "bin" / "python",
+        ]
+        for venv_python in candidates:
+            if not venv_python.exists():
+                continue
+            if Path(sys.executable).resolve() == venv_python.resolve():
+                return
+            os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+prefer_local_venv_python(MIROFISH_SOURCE_ROOT)
+
+from tools.predihermes.review import compile_artifacts, compile_run_artifact
+from backend.app.services.zep_entity_reader import ZepEntityReader
+from backend.app.services.oasis_profile_generator import OasisProfileGenerator
+from backend.app.services.entity_quality import assess_entity_candidate
 
 try:
     import requests
@@ -55,17 +127,18 @@ DATA_DIR = HERMES_HOME / "data" / "geopolitical-market-sim"
 STATE_PATH = DATA_DIR / "topics.json"
 DEFAULT_WORLDOSINT_BASE = os.getenv("WORLDOSINT_BASE_URL", "http://127.0.0.1:3000")
 DEFAULT_MIROFISH_BASE = os.getenv("MIROFISH_BASE_URL", "http://127.0.0.1:5001")
-DEFAULT_MIROFISH_ROOT = Path(os.getenv("MIROFISH_ROOT", str(Path.home() / "MiroFish-main"))).expanduser()
+DEFAULT_MIROFISH_ROOT = Path(os.getenv("MIROFISH_ROOT", str(MIROFISH_SOURCE_ROOT))).expanduser()
 DEFAULT_MAX_ROUNDS = 24
 DEFAULT_PLATFORM = "parallel"
 DEFAULT_DAYS = 7
 DEFAULT_MAX_DEADLINE_DAYS = 31
 DEFAULT_PARALLEL_PROFILE_COUNT = 6
-DEFAULT_SIMULATION_MODE = "auto"
 DEFAULT_HEADLESS_MODULES = [
     "news_rss",
     "intelligence_risk_scores",
     "military_usni",
+    "intelligence_findings",
+    "polymarket_intel",
 ]
 DEFAULT_CONSOLE_WIDTH = 92
 
@@ -80,6 +153,7 @@ SOURCE_STOPWORDS = {
     "Reuters",
     "Associated Press",
     "AP",
+    "AP News",
     "Google News",
     "Al Jazeera",
     "USNI News",
@@ -99,9 +173,75 @@ SOURCE_STOPWORDS = {
     "October",
     "November",
     "December",
+    "News",
+    "Trading Odds",
+    "Predictions",
 }
 
 CAPITALIZED_PHRASE_RE = re.compile(r"\b(?:[A-Z]{2,6}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
+
+REGION_CODE_HINTS = {
+    "IR": ["iran", "tehran", "islamic republic"],
+    "IL": ["israel", "jerusalem", "idf"],
+    "SA": ["saudi", "saudi arabia", "riyadh"],
+    "US": ["united states", "us", "u.s.", "washington"],
+}
+
+SHORT_MATCH_ALLOWLIST = {"idf", "iaea", "irgc", "jcpoa"}
+MATCH_TERM_STOPWORDS = {
+    "after", "before", "between", "calendar", "cannot", "consensus", "credible",
+    "creation", "date", "damage", "defined", "including", "land", "listed",
+    "market", "otherwise", "purposes", "qualify", "qualifying", "regardless",
+    "reporting", "resolution", "resolve", "source", "state", "territory", "that",
+    "the", "their", "there", "these", "third", "this", "time", "under", "use",
+    "uses", "what", "when", "whether", "which", "will", "with", "yes", "no",
+}
+
+MONTH_NAME_TO_NUM = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+TEMPORAL_MONTH_DAY_RE = re.compile(
+    r"\b("
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    r")\s*[-_/]?\s*(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?\b",
+    re.IGNORECASE,
+)
+TEMPORAL_MONTH_RE = re.compile(
+    r"\b("
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    r")\b(?:\s+(20\d{2}))?",
+    re.IGNORECASE,
+)
+TEMPORAL_QUARTER_RE = re.compile(r"\bq([1-4])\s*(20\d{2})\b", re.IGNORECASE)
+TEMPORAL_YEAR_RE = re.compile(r"\b(20\d{2})\b")
 
 
 class PipelineError(RuntimeError):
@@ -145,6 +285,19 @@ def load_state() -> Dict[str, Any]:
         return {"version": 1, "topics": {}}
     data.setdefault("version", 1)
     data.setdefault("topics", {})
+    changed = False
+    topics = data.get("topics")
+    if isinstance(topics, dict):
+        for record in topics.values():
+            if not isinstance(record, dict):
+                continue
+            resolved_root = resolve_mirofish_root(record.get("mirofish_root") or DEFAULT_MIROFISH_ROOT)
+            resolved_root_text = str(resolved_root)
+            if record.get("mirofish_root") != resolved_root_text:
+                record["mirofish_root"] = resolved_root_text
+                changed = True
+    if changed:
+        save_state(data)
     return data
 
 
@@ -176,6 +329,114 @@ def save_state(state: Dict[str, Any]) -> None:
     ensure_dirs()
     with STATE_PATH.open("w", encoding="utf-8") as handle:
         json.dump(state, handle, ensure_ascii=False, indent=2)
+
+
+def load_mirofish_env(mirofish_root: Path) -> Dict[str, str]:
+    env_path = mirofish_root / ".env"
+    values: Dict[str, str] = {}
+    if not env_path.exists():
+        return values
+    for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'").strip('"')
+    return values
+
+
+def load_profile_overrides_file(path_value: Any) -> Dict[str, Any]:
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return {}
+    path = Path(path_text).expanduser()
+    if not path.exists():
+        raise PipelineError(f"Profile overrides file does not exist: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PipelineError(f"Profile overrides file is not valid JSON: {path} ({exc})") from exc
+    if not isinstance(payload, (dict, list)):
+        raise PipelineError(f"Profile overrides file must contain a JSON object or list: {path}")
+    return {"path": str(path), "payload": payload}
+
+
+def model_list_url(base_url: str) -> str:
+    cleaned = (base_url or "").rstrip("/")
+    if cleaned.endswith("/v1"):
+        return f"{cleaned}/models"
+    return f"{cleaned}/v1/models"
+
+
+def check_llm_backend(mirofish_root: Path) -> Dict[str, Any]:
+    require_requests()
+    env_values = load_mirofish_env(mirofish_root)
+    base_url = env_values.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL", "")
+    model_name = env_values.get("LLM_MODEL_NAME") or os.getenv("LLM_MODEL_NAME", "")
+    graph_backend = (env_values.get("GRAPH_BACKEND") or os.getenv("GRAPH_BACKEND") or "auto").strip().lower()
+    zep_key_set = bool(env_values.get("ZEP_API_KEY") or os.getenv("ZEP_API_KEY"))
+    payload: Dict[str, Any] = {
+        "base_url": base_url,
+        "model_name": model_name,
+        "graph_backend": graph_backend or "auto",
+        "zep_key_set": zep_key_set,
+        "is_local_base_url": base_url.startswith("http://127.0.0.1") or base_url.startswith("http://localhost"),
+        "local_profile": {
+            "graph_extraction_mode": env_values.get("LOCAL_GRAPH_EXTRACTION_MODE") or os.getenv("LOCAL_GRAPH_EXTRACTION_MODE") or "fast",
+            "simulation_profile": env_values.get("LOCAL_SIMULATION_PROFILE") or os.getenv("LOCAL_SIMULATION_PROFILE") or "lean",
+            "max_agents": get_local_sim_setting(mirofish_root, "LOCAL_SIM_MAX_AGENTS", 48),
+            "max_rounds": get_local_sim_setting(mirofish_root, "LOCAL_SIM_MAX_ROUNDS", 16),
+            "parallel_profile_count": get_local_sim_setting(mirofish_root, "LOCAL_SIM_PARALLEL_PROFILE_COUNT", 3),
+            "request_timeout_seconds": get_local_sim_setting(mirofish_root, "LOCAL_LLM_REQUEST_TIMEOUT_SECONDS", 900),
+            "max_tokens": get_local_sim_setting(mirofish_root, "LOCAL_LLM_MAX_TOKENS", 192),
+        },
+    }
+    if not base_url:
+        payload.update({"ok": False, "error": "LLM_BASE_URL is not configured"})
+        return payload
+    url = model_list_url(base_url)
+    started = time.time()
+    try:
+        response = requests.get(url, headers={"Accept": "application/json", "User-Agent": USER_AGENT}, timeout=(5, 20))
+        latency_ms = int((time.time() - started) * 1000)
+        response.raise_for_status()
+        data = response.json() if response.text else {}
+        models = [str(row.get("id") or row.get("name") or "") for row in (data.get("data") or data.get("models") or []) if isinstance(row, dict)]
+        payload.update(
+            {
+                "ok": True,
+                "latency_ms": latency_ms,
+                "models_url": url,
+                "available_models": models,
+                "model_available": model_name in models if model_name else False,
+            }
+        )
+        return payload
+    except REQUEST_EXCEPTION as exc:
+        payload.update(
+            {
+                "ok": False,
+                "latency_ms": int((time.time() - started) * 1000),
+                "models_url": url,
+                "error": str(exc),
+            }
+        )
+        return payload
+
+
+def mirofish_uses_local_llm(mirofish_root: Path) -> bool:
+    env_values = load_mirofish_env(mirofish_root)
+    base_url = (env_values.get("LLM_BASE_URL") or os.getenv("LLM_BASE_URL") or "").strip().lower()
+    return base_url.startswith("http://127.0.0.1") or base_url.startswith("http://localhost")
+
+
+def get_local_sim_setting(mirofish_root: Path, key: str, default: int) -> int:
+    env_values = load_mirofish_env(mirofish_root)
+    raw = (env_values.get(key) or os.getenv(key) or "").strip()
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def to_date(value: Any) -> Optional[datetime]:
@@ -273,6 +534,388 @@ def normalize_module_params(value: Any) -> Dict[str, Dict[str, Any]]:
     return output
 
 
+def normalize_match_text(value: Any) -> str:
+    return re.sub(r"[^a-z0-9\s]+", " ", str(value or "").lower())
+
+
+def extract_temporal_markers(*values: Any, end_date: Any = None) -> List[str]:
+    markers: set[str] = set()
+
+    def add_month(month_value: int, year_value: Optional[int] = None, day_value: Optional[int] = None) -> None:
+        markers.add(f"m:{month_value:02d}")
+        if year_value:
+            markers.add(f"ym:{year_value:04d}-{month_value:02d}")
+            markers.add(f"y:{year_value:04d}")
+            quarter = ((month_value - 1) // 3) + 1
+            markers.add(f"q:{year_value:04d}-q{quarter}")
+        if day_value:
+            markers.add(f"md:{month_value:02d}-{day_value:02d}")
+            if year_value:
+                markers.add(f"ymd:{year_value:04d}-{month_value:02d}-{day_value:02d}")
+
+    if end_date:
+        dt = to_date(end_date)
+        if dt:
+            add_month(dt.month, dt.year, dt.day)
+
+    for value in values:
+        text = str(value or "")
+        if not text:
+            continue
+        for match in TEMPORAL_MONTH_DAY_RE.finditer(text):
+            month = MONTH_NAME_TO_NUM[match.group(1).lower()]
+            day = int(match.group(2))
+            year = int(match.group(3)) if match.group(3) else None
+            add_month(month, year, day)
+        for match in TEMPORAL_QUARTER_RE.finditer(text):
+            markers.add(f"q:{int(match.group(2)):04d}-q{int(match.group(1))}")
+            markers.add(f"y:{int(match.group(2)):04d}")
+        for match in TEMPORAL_MONTH_RE.finditer(text):
+            month = MONTH_NAME_TO_NUM[match.group(1).lower()]
+            year = int(match.group(2)) if match.group(2) else None
+            add_month(month, year, None)
+        for match in TEMPORAL_YEAR_RE.finditer(text):
+            markers.add(f"y:{int(match.group(1)):04d}")
+    return sorted(markers)
+
+
+def _temporal_datetime_from_text(text: str, fallback_year: Optional[int] = None) -> Optional[datetime]:
+    raw = str(text or "")
+    if not raw:
+        return None
+    match = TEMPORAL_MONTH_DAY_RE.search(raw)
+    if match:
+        month = MONTH_NAME_TO_NUM[match.group(1).lower()]
+        day = int(match.group(2))
+        year = int(match.group(3)) if match.group(3) else (fallback_year or now_utc().year)
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    match = TEMPORAL_MONTH_RE.search(raw)
+    if match:
+        month = MONTH_NAME_TO_NUM[match.group(1).lower()]
+        year = int(match.group(2)) if match.group(2) else (fallback_year or now_utc().year)
+        day = calendar.monthrange(year, month)[1]
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    match = TEMPORAL_QUARTER_RE.search(raw)
+    if match:
+        quarter = int(match.group(1))
+        year = int(match.group(2))
+        month = quarter * 3
+        day = calendar.monthrange(year, month)[1]
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    match = TEMPORAL_YEAR_RE.search(raw)
+    if match:
+        year = int(match.group(1))
+        return datetime(year, 12, 31, tzinfo=timezone.utc)
+    return None
+
+
+def resolved_market_date(market: Dict[str, Any]) -> Optional[datetime]:
+    fallback = to_date(market.get("endDate"))
+    fallback_year = fallback.year if fallback else None
+    for field in ("question", "description", "title"):
+        resolved = _temporal_datetime_from_text(str(market.get(field) or ""), fallback_year=fallback_year)
+        if resolved:
+            return resolved
+    return fallback
+
+
+def resolved_market_deadline_label(market: Dict[str, Any]) -> str:
+    resolved = resolved_market_date(market)
+    if not resolved:
+        return "n/a"
+    return resolved.astimezone(timezone.utc).strftime("%Y-%m-%d 00:00 UTC")
+
+
+def temporal_alignment_score(intent_markers: List[str], market_markers: List[str]) -> float:
+    if not intent_markers:
+        return 0.0
+    if not market_markers:
+        return -1.0
+
+    weights = {
+        "ymd:": 8.0,
+        "md:": 6.0,
+        "ym:": 4.0,
+        "m:": 2.5,
+        "q:": 2.0,
+        "y:": 1.0,
+    }
+
+    def marker_weight(marker: str) -> float:
+        for prefix, weight in weights.items():
+            if marker.startswith(prefix):
+                return weight
+        return 1.0
+
+    score = sum(marker_weight(marker) for marker in intent_markers if marker in market_markers)
+    families = ("ymd:", "md:", "ym:", "m:", "q:", "y:")
+    for family in families:
+        expected = [marker for marker in intent_markers if marker.startswith(family)]
+        actual = [marker for marker in market_markers if marker.startswith(family)]
+        if expected and actual and not (set(expected) & set(actual)):
+            score -= max(marker_weight(marker) for marker in expected)
+    return score
+
+
+def canonical_market_anchor(market: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "slug": str(market.get("slug") or ""),
+        "question": str(market.get("question") or ""),
+        "description": str(market.get("description") or ""),
+        "condition_id": str(market.get("conditionId") or ""),
+        "end_date": str(market.get("endDate") or ""),
+        "resolution_deadline": resolved_market_deadline_label(market),
+        "resolution_markers": extract_temporal_markers(
+            market.get("question"),
+            market.get("description"),
+            end_date=market.get("endDate"),
+        ),
+    }
+
+
+def build_market_intent(
+    *,
+    topic: str,
+    query: str,
+    keywords: List[str],
+    region_codes: List[str],
+    market_anchor: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    anchor = market_anchor or {}
+    anchor_question = str(anchor.get("question") or "")
+    anchor_description = str(anchor.get("description") or "")
+    terms = build_topic_match_terms(
+        topic,
+        keywords,
+        " ".join(part for part in [query, anchor_question, anchor_description] if part),
+        region_codes,
+    )
+    temporal_markers = extract_temporal_markers(topic, query, anchor_question, anchor_description)
+    if not temporal_markers and isinstance(anchor.get("resolution_markers"), list):
+        temporal_markers = [str(marker) for marker in anchor.get("resolution_markers") if marker]
+    return {
+        "terms": terms,
+        "temporal_markers": temporal_markers,
+        "anchor_slug": str(anchor.get("slug") or ""),
+        "anchor_condition_id": str(anchor.get("condition_id") or ""),
+        "anchor_question": anchor_question,
+    }
+
+
+def build_topic_match_terms(
+    topic: str,
+    keywords: List[str],
+    market_question: str,
+    region_codes: List[str],
+) -> List[str]:
+    terms = set()
+    sources = [topic, market_question, *keywords]
+    for raw in sources:
+        text = normalize_match_text(raw)
+        for token in text.split():
+            if len(token) >= 3 and token not in MATCH_TERM_STOPWORDS:
+                terms.add(token)
+        if text.strip() and 1 < len(text.split()) <= 6:
+            terms.add(text.strip())
+    for code in region_codes:
+        for hint in REGION_CODE_HINTS.get(str(code).upper(), []):
+            terms.add(hint)
+    cleaned_terms = []
+    for term in terms:
+        normalized = term.strip()
+        if not normalized:
+            continue
+        compact = normalized.replace(" ", "")
+        if len(compact) < 4 and compact not in SHORT_MATCH_ALLOWLIST:
+            continue
+        if compact in MATCH_TERM_STOPWORDS:
+            continue
+        cleaned_terms.append(normalized)
+    return sorted(set(cleaned_terms))
+
+
+def text_matches_terms(value: Any, terms: List[str]) -> bool:
+    haystack = normalize_match_text(value)
+    if not haystack:
+        return False
+    return any(term in haystack for term in terms)
+
+
+def merge_module_params(
+    module_params: Dict[str, Dict[str, Any]],
+    *,
+    topic: str,
+    keywords: List[str],
+    primary_market: Dict[str, Any],
+    region_codes: List[str],
+    days: int,
+) -> Dict[str, Dict[str, Any]]:
+    merged = {name: dict(payload) for name, payload in module_params.items()}
+    if "intelligence_findings" not in merged:
+        merged["intelligence_findings"] = {
+            "regions": region_codes or ["IR", "IL", "SA", "US"],
+            "window_days": days,
+        }
+    if "polymarket_intel" not in merged:
+        merged["polymarket_intel"] = {
+            "query": primary_market.get("question") or topic,
+            "limit": 100,
+        }
+    return merged
+
+
+def compact_trade_notional(row: Dict[str, Any]) -> float:
+    candidates = [
+        row.get("tradeNotional"),
+        row.get("amountUsd"),
+        row.get("sizeUsd"),
+        row.get("dollar_volume"),
+        row.get("volumeUsd"),
+        row.get("notional"),
+        row.get("size"),
+        row.get("amount"),
+    ]
+    for value in candidates:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    try:
+        price = float(row.get("price") or 0.0)
+        size = float(row.get("size") or row.get("amount") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if price > 0 and size > 0:
+        return round(price * size, 4)
+    return 0.0
+
+
+def curate_intelligence_findings(payload: Dict[str, Any], terms: List[str]) -> Dict[str, Any]:
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    findings = (data or {}).get("findings") or []
+    relevant = []
+    for finding in findings:
+        haystack = " ".join(
+            [
+                str(finding.get("title") or ""),
+                str(finding.get("summary") or ""),
+                json.dumps(finding.get("payload") or {}, ensure_ascii=False),
+            ]
+        )
+        if text_matches_terms(haystack, terms):
+            relevant.append(finding)
+    summary_counter: Counter[str] = Counter()
+    for finding in relevant:
+        summary_counter[str(finding.get("priority") or "unknown").lower()] += 1
+    curated = {
+        "findings": relevant[:12],
+        "summary": {
+            "critical": summary_counter.get("critical", 0),
+            "high": summary_counter.get("high", 0),
+            "medium": summary_counter.get("medium", 0),
+            "low": summary_counter.get("low", 0),
+            "total": len(relevant),
+            "raw_total": len(findings),
+        },
+        "sources": sorted({str(row.get("source") or "") for row in relevant if row.get("source")}),
+    }
+    return {
+        **payload,
+        "data": curated,
+    }
+
+
+def curate_polymarket_intel(payload: Dict[str, Any], primary_market: Dict[str, Any], terms: List[str]) -> Dict[str, Any]:
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    slug = str(primary_market.get("slug") or "")
+    question = str(primary_market.get("question") or "").lower()
+    condition_id = str(primary_market.get("conditionId") or "")
+
+    def market_match(row: Dict[str, Any]) -> bool:
+        row_text = " ".join(
+            [
+                str(row.get("question") or ""),
+                str(row.get("title") or ""),
+                str(row.get("slug") or ""),
+                str(row.get("description") or ""),
+            ]
+        )
+        if row.get("conditionId") == condition_id or row.get("slug") == slug:
+            return True
+        return text_matches_terms(row_text, terms)
+
+    def trade_match(row: Dict[str, Any]) -> bool:
+        row_text = " ".join(
+            [
+                str(row.get("title") or ""),
+                str(row.get("slug") or ""),
+                str(row.get("conditionId") or ""),
+            ]
+        )
+        if row.get("conditionId") == condition_id or row.get("slug") == slug:
+            return True
+        return text_matches_terms(row_text, terms) or str(row.get("title") or "").lower() == question
+
+    matched_markets = [row for row in (data or {}).get("markets") or [] if isinstance(row, dict) and market_match(row)]
+    matched_trades = [row for row in (data or {}).get("trades") or [] if isinstance(row, dict) and trade_match(row)]
+    matched_trades.sort(key=compact_trade_notional, reverse=True)
+    total_notional = round(sum(compact_trade_notional(row) for row in matched_trades), 2)
+    curated = {
+        "matched_market_count": len(matched_markets),
+        "matched_trade_count": len(matched_trades),
+        "matched_trades_notional": total_notional,
+        "matched_markets": [
+            {
+                "question": row.get("question") or row.get("title") or "",
+                "slug": row.get("slug") or "",
+                "conditionId": row.get("conditionId") or "",
+                "endDate": row.get("endDate") or "",
+                "outcomePrices": row.get("outcomePrices") or "",
+            }
+            for row in matched_markets[:6]
+        ],
+        "matched_trades": [
+            {
+                "title": row.get("title") or "",
+                "slug": row.get("slug") or "",
+                "side": row.get("side") or "",
+                "outcome": row.get("outcome") or "",
+                "price": row.get("price"),
+                "tradeNotional": compact_trade_notional(row),
+                "timestamp": row.get("timestamp"),
+                "transactionHash": row.get("transactionHash") or "",
+            }
+            for row in matched_trades[:12]
+        ],
+    }
+    return {
+        **payload,
+        "data": curated,
+    }
+
+
+def curate_extra_modules(
+    extra_modules: Dict[str, Any],
+    *,
+    topic: str,
+    keywords: List[str],
+    primary_market: Dict[str, Any],
+    region_codes: List[str],
+) -> Dict[str, Any]:
+    terms = build_topic_match_terms(topic, keywords, primary_market.get("question") or "", region_codes)
+    curated: Dict[str, Any] = {}
+    for module_name, payload in extra_modules.items():
+        if module_name == "intelligence_findings":
+            curated[module_name] = curate_intelligence_findings(payload, terms)
+        elif module_name == "polymarket_intel":
+            curated[module_name] = curate_polymarket_intel(payload, primary_market, terms)
+        else:
+            curated[module_name] = payload
+    return curated
+
+
 def parse_module_param_args(values: List[str]) -> Dict[str, Dict[str, Any]]:
     output: Dict[str, Dict[str, Any]] = {}
     for raw in values:
@@ -364,154 +1007,6 @@ def tokenize_terms(*parts: str) -> List[str]:
             seen.add(token)
             tokens.append(token)
     return tokens
-
-
-def clamp_int(value: int, low: int, high: int) -> int:
-    return max(low, min(high, int(value)))
-
-
-def assess_feed_quality(
-    news: Dict[str, Any],
-    context: Dict[str, Any],
-    headless_modules: List[str],
-    extra_modules: Dict[str, Any],
-) -> Dict[str, Any]:
-    items = news.get("items") or []
-    themes = news.get("themes") or []
-    risk_rows = context.get("riskRows") or []
-    module_count = len(set((headless_modules or []) + list((extra_modules or {}).keys())))
-    recent_count = 0
-    for item in items[:80]:
-        dt = to_date(item.get("pubDateIso") or item.get("pubDate"))
-        if dt and (now_utc() - dt).total_seconds() <= 72 * 3600:
-            recent_count += 1
-
-    score = 0
-    notes: List[str] = []
-    if len(items) >= 20:
-        score += 30
-    elif len(items) >= 10:
-        score += 20
-        notes.append("headline sample is thin; consider widening keywords or days")
-    else:
-        score += 10
-        notes.append("headline sample is weak")
-
-    if recent_count >= 8:
-        score += 20
-    elif recent_count >= 3:
-        score += 12
-        notes.append("few recent headlines in last 72h")
-    else:
-        notes.append("insufficient recent headline freshness")
-
-    if len(themes) >= 3:
-        score += 20
-    elif len(themes) >= 1:
-        score += 12
-        notes.append("theme diversity is limited")
-
-    if risk_rows:
-        score += 15
-    else:
-        notes.append("risk score module returned no rows")
-
-    if module_count >= 3:
-        score += 15
-    elif module_count == 2:
-        score += 10
-    else:
-        score += 5
-        notes.append("too few modules selected for robust monitoring")
-
-    if score >= 75:
-        status = "good"
-    elif score >= 50:
-        status = "moderate"
-    else:
-        status = "poor"
-
-    if recent_count == 0 and status == "good":
-        status = "moderate"
-        notes.append("no recent items in last 72h; downgraded from good")
-
-    return {
-        "status": status,
-        "score": score,
-        "headline_count": len(items),
-        "recent_headline_count_72h": recent_count,
-        "theme_count": len(themes),
-        "risk_row_count": len(risk_rows),
-        "module_count": module_count,
-        "notes": notes,
-    }
-
-
-def select_simulation_plan(
-    config: Dict[str, Any],
-    feed_quality: Dict[str, Any],
-    runtime_overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    runtime_overrides = runtime_overrides or {}
-    mode = str(runtime_overrides.get("simulation_mode") or config.get("simulation_mode") or DEFAULT_SIMULATION_MODE).strip().lower()
-    if mode not in {"auto", "manual"}:
-        mode = DEFAULT_SIMULATION_MODE
-
-    manual_rounds = runtime_overrides.get("target_rounds")
-    if manual_rounds is None:
-        manual_rounds = config.get("max_rounds", DEFAULT_MAX_ROUNDS)
-    manual_profiles = config.get("parallel_profile_count", DEFAULT_PARALLEL_PROFILE_COUNT)
-    manual_agents = runtime_overrides.get("target_agents")
-    if manual_agents is None:
-        manual_agents = config.get("target_agents") or 0
-
-    rationale: List[str] = []
-    if mode == "manual":
-        selected_rounds = clamp_int(int(manual_rounds or DEFAULT_MAX_ROUNDS), 6, 240)
-        selected_profiles = clamp_int(int(manual_profiles or DEFAULT_PARALLEL_PROFILE_COUNT), 2, 20)
-        rationale.append("manual mode selected: using explicit operator controls")
-    else:
-        selected_rounds, selected_profiles = 28, 7
-        rationale.append("auto mode selected: agent chooses simulation depth from feed quality")
-        quality = feed_quality.get("status")
-        if quality == "good":
-            selected_rounds = 36
-            selected_profiles = 9
-            rationale.append("feed quality good: increased simulation depth")
-        elif quality == "moderate":
-            selected_rounds = 28
-            selected_profiles = 7
-            rationale.append("feed quality moderate: medium simulation depth")
-        elif quality == "poor":
-            selected_rounds = 18
-            selected_profiles = 5
-            rationale.append("feed quality poor: reduced depth until feed improves")
-
-    if manual_agents:
-        try:
-            agent_hint = clamp_int(int(manual_agents), 6, 240)
-            selected_profiles = clamp_int(int(round(agent_hint / 6.0)), 2, 20)
-            rationale.append(f"agent hint {agent_hint} translated to profile parallelism {selected_profiles}")
-        except (TypeError, ValueError):
-            agent_hint = 0
-    else:
-        agent_hint = 0
-
-    selected_rounds = clamp_int(selected_rounds, 6, 240)
-    selected_profiles = clamp_int(selected_profiles, 2, 20)
-    return {
-        "mode": mode,
-        "requested": {
-            "target_rounds": manual_rounds,
-            "target_agents": manual_agents,
-        },
-        "selected": {
-            "max_rounds": selected_rounds,
-            "parallel_profile_count": selected_profiles,
-            "target_agents_hint": agent_hint,
-        },
-        "rationale": rationale,
-    }
 
 
 def request_json(method: str, url: str, *, timeout: tuple[int, int] = (10, 90), **kwargs: Any) -> Any:
@@ -665,17 +1160,58 @@ def dedupe_news(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return output
 
 
-def relevant_news_items(items: List[Dict[str, Any]], keywords: List[str]) -> List[Dict[str, Any]]:
-    if not keywords:
-        return items
+def is_market_commentary_item(item: Dict[str, Any]) -> bool:
+    title = normalize_match_text(item.get("title"))
+    source = normalize_match_text(item.get("source"))
+    return (
+        "polymarket" in title
+        or "polymarket" in source
+        or ("trading odds" in title and "prediction" in title)
+    )
+
+
+def relevant_news_items(
+    items: List[Dict[str, Any]],
+    *,
+    topic: str,
+    keywords: List[str],
+    primary_market: Dict[str, Any],
+    region_codes: List[str],
+) -> List[Dict[str, Any]]:
+    terms = build_topic_match_terms(
+        topic,
+        keywords,
+        str(primary_market.get("question") or ""),
+        region_codes,
+    )
+    temporal_markers = extract_temporal_markers(
+        topic,
+        primary_market.get("question"),
+        primary_market.get("description"),
+        end_date=primary_market.get("endDate"),
+    )
     filtered: List[Dict[str, Any]] = []
     for item in items:
-        haystack = " ".join(
-            str(item.get(field, ""))
-            for field in ("title", "source", "link", "summary")
-        ).lower()
-        if any(keyword in haystack for keyword in keywords):
-            filtered.append(item)
+        if is_market_commentary_item(item):
+            continue
+        haystack = str(item.get("title", ""))
+        normalized_haystack = normalize_match_text(haystack)
+        match_count = sum(1 for term in terms if term in normalized_haystack)
+        score = topic_match_score(haystack, terms) * 10
+        score += temporal_alignment_score(temporal_markers, extract_temporal_markers(haystack))
+        if match_count == 0 or score < 1.0:
+            continue
+        item_copy = dict(item)
+        item_copy["relevanceScore"] = round(score, 3)
+        item_copy["matchCount"] = match_count
+        filtered.append(item_copy)
+    filtered.sort(
+        key=lambda item: (
+            float(item.get("relevanceScore") or 0),
+            to_date(item.get("pubDateIso")) or datetime(1970, 1, 1, tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
     return filtered
 
 
@@ -684,6 +1220,8 @@ def fetch_news_snapshot(
     topic: str,
     days: int,
     keywords: List[str],
+    primary_market: Dict[str, Any],
+    region_codes: List[str],
     module_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     feeds = build_feed_urls(topic, days)
@@ -719,10 +1257,24 @@ def fetch_news_snapshot(
             }
         )
     items.sort(key=lambda item: to_date(item.get("pubDateIso")) or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
-    items = dedupe_news(relevant_news_items(items, keywords))
+    items = dedupe_news(
+        relevant_news_items(
+            items,
+            topic=topic,
+            keywords=keywords,
+            primary_market=primary_market,
+            region_codes=region_codes,
+        )
+    )
     theme_counts = Counter(classify_theme(item.get("title", "")) for item in items)
     themes = [{"theme": theme, "count": count} for theme, count in theme_counts.most_common(8)]
-    actors = extract_candidate_actors([item.get("title", "") for item in items], limit=12)
+    actor_terms = build_topic_match_terms(topic, keywords, str(primary_market.get("question") or ""), region_codes)
+    actors = extract_candidate_actors(
+        [item.get("title", "") for item in items],
+        limit=12,
+        anchor_terms=actor_terms,
+        anchor_text=str(primary_market.get("question") or ""),
+    )
     return {
         "feeds": feeds,
         "items": items,
@@ -788,34 +1340,47 @@ def topic_match_score(text: str, terms: List[str]) -> float:
 
 
 def market_deadline_days(end_date: Any) -> float:
-    dt = to_date(end_date)
+    if isinstance(end_date, dict):
+        dt = resolved_market_date(end_date)
+    else:
+        dt = to_date(end_date)
     if not dt:
         return 9999.0
     return (dt - now_utc()).total_seconds() / 86400.0
 
 
-def score_market(market: Dict[str, Any], terms: List[str], max_deadline_days: int) -> float:
+def score_market(market: Dict[str, Any], intent: Dict[str, Any], max_deadline_days: int) -> float:
     text = " ".join(
         str(market.get(field, ""))
         for field in ("question", "description", "title")
     )
+    terms = list(intent.get("terms") or [])
+    temporal_markers = list(intent.get("temporal_markers") or [])
     match = topic_match_score(text, terms) * 12
-    deadline_days = market_deadline_days(market.get("endDate"))
+    deadline_days = market_deadline_days(market)
     if deadline_days < 0 or deadline_days > max_deadline_days:
         return -1e9
     deadline_bonus = (max_deadline_days - deadline_days) / max(max_deadline_days, 1) * 2
     volume_bonus = math.log10(float(market.get("volumeNum") or 0) + 1)
     liquidity_bonus = math.log10(float(market.get("liquidityNum") or 0) + 1)
     clarity_bonus = 1.0 if str(market.get("question", "")).strip().endswith("?") else 0.0
-    return match + deadline_bonus + volume_bonus + liquidity_bonus + clarity_bonus
+    market_markers = extract_temporal_markers(text, end_date=market.get("endDate"))
+    temporal_bonus = temporal_alignment_score(temporal_markers, market_markers)
+    anchor_bonus = 0.0
+    if intent.get("anchor_slug") and str(market.get("slug") or "") == intent["anchor_slug"]:
+        anchor_bonus += 6.0
+    if intent.get("anchor_condition_id") and str(market.get("conditionId") or "") == intent["anchor_condition_id"]:
+        anchor_bonus += 6.0
+    if intent.get("anchor_question") and normalize_match_text(intent["anchor_question"]) == normalize_match_text(market.get("question")):
+        anchor_bonus += 3.0
+    return match + deadline_bonus + volume_bonus + liquidity_bonus + clarity_bonus + temporal_bonus + anchor_bonus
 
 
-def search_markets(query: str, max_deadline_days: int) -> List[Dict[str, Any]]:
+def search_markets(query: str, max_deadline_days: int, intent: Dict[str, Any]) -> List[Dict[str, Any]]:
     data = request_json("GET", f"{GAMMA_API}/public-search?q={quote(query)}")
     events = data.get("events", [])
     seen = set()
     candidates: List[Dict[str, Any]] = []
-    terms = tokenize_terms(query)
     for event in events:
         title = event.get("title", "")
         for market in event.get("markets") or []:
@@ -831,7 +1396,7 @@ def search_markets(query: str, max_deadline_days: int) -> List[Dict[str, Any]]:
                 continue
             market_copy = dict(market)
             market_copy["title"] = title
-            market_copy["score"] = score_market(market_copy, terms, max_deadline_days)
+            market_copy["score"] = score_market(market_copy, intent, max_deadline_days)
             if market_copy["score"] <= -1e8:
                 continue
             candidates.append(market_copy)
@@ -881,6 +1446,7 @@ def enrich_market(slug: str) -> Dict[str, Any]:
         "description": str(market.get("description") or "").strip(),
         "url": f"https://polymarket.com/event/{market.get('slug')}",
         "endDate": market.get("endDate"),
+        "resolutionDeadline": resolved_market_deadline_label(market),
         "volumeNum": float(market.get("volumeNum") or 0),
         "liquidityNum": float(market.get("liquidityNum") or market.get("liquidityClob") or 0),
         "bestBid": best_bid,
@@ -895,8 +1461,24 @@ def enrich_market(slug: str) -> Dict[str, Any]:
     }
 
 
-def select_markets(query: str, max_deadline_days: int, limit: int = 5) -> List[Dict[str, Any]]:
-    candidates = search_markets(query, max_deadline_days)
+def select_markets(
+    query: str,
+    max_deadline_days: int,
+    *,
+    topic: str = "",
+    keywords: Optional[List[str]] = None,
+    region_codes: Optional[List[str]] = None,
+    market_anchor: Optional[Dict[str, Any]] = None,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    intent = build_market_intent(
+        topic=topic,
+        query=query,
+        keywords=keywords or [],
+        region_codes=region_codes or [],
+        market_anchor=market_anchor,
+    )
+    candidates = search_markets(query, max_deadline_days, intent)
     if not candidates:
         raise PipelineError(f"No open Polymarket markets matched query '{query}' within {max_deadline_days} days")
     selected: List[Dict[str, Any]] = []
@@ -909,7 +1491,13 @@ def select_markets(query: str, max_deadline_days: int, limit: int = 5) -> List[D
             break
     if not selected:
         raise PipelineError(f"Failed to enrich any candidate markets for query '{query}'")
-    selected.sort(key=lambda market: market_deadline_days(market.get("endDate")))
+    selected.sort(
+        key=lambda market: (
+            score_market(market, intent, max_deadline_days),
+            -market_deadline_days(market),
+        ),
+        reverse=True,
+    )
     return selected
 
 
@@ -928,7 +1516,13 @@ def classify_theme(title: str) -> str:
     return "General conflict"
 
 
-def extract_candidate_actors(texts: List[str], limit: int = 10) -> List[Dict[str, Any]]:
+def extract_candidate_actors(
+    texts: List[str],
+    *,
+    limit: int = 10,
+    anchor_terms: Optional[List[str]] = None,
+    anchor_text: str = "",
+) -> List[Dict[str, Any]]:
     counts: Counter[str] = Counter()
     for text in texts:
         for match in CAPITALIZED_PHRASE_RE.findall(text or ""):
@@ -936,6 +1530,13 @@ def extract_candidate_actors(texts: List[str], limit: int = 10) -> List[Dict[str
             if not phrase or phrase in SOURCE_STOPWORDS:
                 continue
             if phrase.lower() in {"yes", "no", "will", "what", "when"}:
+                continue
+            quality = assess_entity_candidate(
+                phrase,
+                anchor_terms=anchor_terms,
+                anchor_text=anchor_text,
+            )
+            if not quality.keep:
                 continue
             counts[phrase] += 1
     return [
@@ -961,12 +1562,13 @@ def split_description_points(description: str, limit: int = 4) -> List[str]:
 
 
 def generate_simulation_requirement(topic: str, primary_market: Dict[str, Any]) -> str:
-    deadline = short_dt(primary_market.get("endDate"))
+    deadline = str(primary_market.get("resolutionDeadline") or resolved_market_deadline_label(primary_market))
     question = primary_market.get("question", "")
     return (
         f"Forecast whether the Polymarket contract '{question}' resolves YES by {deadline}. "
         f"Use the seed packet to simulate the geopolitical topic '{topic}', actor incentives, escalation pathways, "
         f"diplomatic pathways, and the exact evidence threshold implied by the market wording and description. "
+        f"If topic shorthand and contract timing diverge, prioritize the contract wording and deadline. "
         f"End with an explicit YES/NO call for the contract plus the milestones that would most change the forecast."
     )
 
@@ -999,7 +1601,8 @@ def build_seed_markdown(
     lines.append("")
     lines.append(f"- Market: {primary_market['question']}")
     lines.append(f"- URL: {primary_market['url']}")
-    lines.append(f"- Deadline: {short_dt(primary_market['endDate'])}")
+    lines.append(f"- Resolution deadline: {primary_market.get('resolutionDeadline') or resolved_market_deadline_label(primary_market)}")
+    lines.append(f"- Market close timestamp: {short_dt(primary_market['endDate'])}")
     lines.append(f"- Best bid / ask: {pct(primary_market['bestBid'])} / {pct(primary_market['bestAsk'])}")
     lines.append(f"- Liquidity / volume: {human_money(primary_market['liquidityNum'])} / {human_money(primary_market['volumeNum'])}")
     lines.append("")
@@ -1019,7 +1622,10 @@ def build_seed_markdown(
         lines.append("| Market | Bid | Ask | Deadline |")
         lines.append("| --- | --- | --- | --- |")
         for market in related_markets:
-            lines.append(f"| {market['question']} | {pct(market['bestBid'])} | {pct(market['bestAsk'])} | {short_dt(market['endDate'])} |")
+            lines.append(
+                f"| {market['question']} | {pct(market['bestBid'])} | {pct(market['bestAsk'])} | "
+                f"{market.get('resolutionDeadline') or resolved_market_deadline_label(market)} |"
+            )
         lines.append("")
     lines.append("## Situation snapshot")
     lines.append("")
@@ -1076,7 +1682,10 @@ def build_seed_markdown(
     lines.append("")
     lines.append("## MiroFish simulation brief")
     lines.append("")
-    lines.append(f"Use this packet to simulate whether the primary contract resolves Yes before {short_dt(primary_market['endDate'])}.")
+    lines.append(
+        f"Use this packet to simulate whether the primary contract resolves Yes before "
+        f"{primary_market.get('resolutionDeadline') or resolved_market_deadline_label(primary_market)}."
+    )
     lines.append("")
     lines.append("Questions the simulation should answer:")
     lines.append(f"- What sequence of events could still produce a Yes resolution for '{primary_market['question']}'?")
@@ -1104,6 +1713,70 @@ def build_seed_markdown(
     if context.get("usniArticleUrl"):
         lines.append(f"- [USNI Fleet Tracker source]({context['usniArticleUrl']})")
     return "\n".join(lines) + "\n"
+
+
+def build_simulation_brief_markdown(
+    topic: str,
+    primary_market: Dict[str, Any],
+    news: Dict[str, Any],
+    context: Dict[str, Any],
+    extra_modules: Dict[str, Any],
+) -> str:
+    description_points = split_description_points(primary_market.get("description", ""))
+    finding_rows = (((extra_modules.get("intelligence_findings") or {}).get("data") or {}).get("findings") or [])[:8]
+    market_intel = ((extra_modules.get("polymarket_intel") or {}).get("data") or {})
+    risk_rows = (context.get("riskRows") or [])[:4]
+    actor_rows = (news.get("actors") or [])[:10]
+    theme_rows = (news.get("themes") or [])[:6]
+    headline_rows = (news.get("items") or [])[:10]
+
+    paragraphs: List[str] = []
+    paragraphs.append(
+        f"This simulation concerns {topic}. The target contract asks whether '{primary_market.get('question')}' resolves YES by "
+        f"{primary_market.get('resolutionDeadline') or resolved_market_deadline_label(primary_market)}."
+    )
+    if description_points:
+        paragraphs.append("Resolution language and contract framing: " + " ".join(description_points[:3]))
+    paragraphs.append(
+        f"Current market state: best bid {pct(primary_market.get('bestBid'))}, best ask {pct(primary_market.get('bestAsk'))}, liquidity {human_money(primary_market.get('liquidityNum'))}, volume {human_money(primary_market.get('volumeNum'))}."
+    )
+    if actor_rows:
+        actor_text = ", ".join(f"{row['label']} ({row['count']})" for row in actor_rows[:8])
+        paragraphs.append(f"Relevant named actors and organizations already present in the evidence: {actor_text}.")
+    if theme_rows:
+        theme_text = ", ".join(f"{row['theme']} ({row['count']})" for row in theme_rows[:5])
+        paragraphs.append(f"Dominant evidence themes: {theme_text}.")
+    if risk_rows:
+        risk_text = "; ".join(
+            f"{row.get('region', 'n/a')} combined risk {row.get('combinedScore', 'n/a')} trend {str(row.get('trend', '')).replace('TREND_DIRECTION_', '')}"
+            for row in risk_rows
+        )
+        paragraphs.append(f"Regional monitoring snapshot: {risk_text}.")
+    if finding_rows:
+        finding_text = " ".join(
+            f"{str(row.get('title') or '').strip()}. {str(row.get('summary') or '').strip()}".strip()
+            for row in finding_rows
+        )
+        paragraphs.append(f"Recent intelligence and OSINT findings: {finding_text}")
+    if market_intel.get("matched_trades"):
+        trade_rows = market_intel.get("matched_trades") or []
+        trade_text = " ".join(
+            f"{row.get('side') or 'n/a'} {row.get('outcome') or 'n/a'} at {row.get('price')} for {human_money(row.get('tradeNotional'))}."
+            for row in trade_rows[:6]
+        )
+        paragraphs.append(
+            f"Polymarket flow relevant to this contract totals {human_money(market_intel.get('matched_trades_notional') or 0)} across {market_intel.get('matched_trade_count') or 0} matched trades. {trade_text}"
+        )
+    if headline_rows:
+        headline_text = " ".join(
+            f"\"{str(row.get('title') or '').strip()}\""
+            for row in headline_rows
+        )
+        paragraphs.append(f"Recent news pulse includes: {headline_text}")
+    paragraphs.append(
+        "Model concrete actors, incentives, and verification milestones only. Ignore feed labels, metadata, timestamps, and headline fragments. Focus on which observable diplomatic or escalation events would move the contract from likely NO to plausible YES before expiry."
+    )
+    return "\n\n".join(paragraphs).strip() + "\n"
 
 
 def poll_task(base_url: str, task_id: str, *, timeout_seconds: int = 1800, sleep_seconds: int = 5) -> Dict[str, Any]:
@@ -1150,6 +1823,15 @@ def poll_run(base_url: str, simulation_id: str, *, timeout_seconds: int = 3600, 
             return data
         time.sleep(sleep_seconds)
     raise PipelineError(f"Timed out waiting for simulation {simulation_id}")
+
+
+def close_simulation_env(base_url: str, simulation_id: str, *, timeout_seconds: int = 30) -> Dict[str, Any]:
+    payload = request_json(
+        "POST",
+        f"{base_url.rstrip('/')}/api/simulation/close-env",
+        json={"simulation_id": simulation_id, "timeout": timeout_seconds},
+    )
+    return payload.get("data") or {}
 
 
 def parse_action_log(path: Path) -> Dict[str, Any]:
@@ -1375,7 +2057,7 @@ def summarize_simulation_run(run_dir: Path, mirofish_root: Path, simulation_id: 
         "log_path": str(log_path),
         "twitter_log": str(twitter_log),
         "reddit_log": str(reddit_log),
-        "agent_count": len(config.get("agents", [])),
+        "agent_count": len(config.get("agent_configs") or config.get("agents") or []),
         "initial_posts": len(config.get("events", {}).get("initial_posts", [])),
         "hours": config.get("time", {}).get("total_hours"),
         "twitter": twitter,
@@ -1425,10 +2107,38 @@ def summarize_simulation_run(run_dir: Path, mirofish_root: Path, simulation_id: 
     return summary
 
 
+def write_mirofish_link(run_dir: Path, payload: Dict[str, Any]) -> Path:
+    path = run_dir / "mirofish_link.json"
+    existing = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+    merged = {
+        "version": 1,
+        "updated_at": iso_now(),
+        **existing,
+        **payload,
+    }
+    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def persist_topic_market_anchor(topic_id: str, primary_market: Dict[str, Any]) -> None:
+    state = load_state()
+    topic_record = state.get("topics", {}).get(topic_id)
+    if not topic_record:
+        return
+    topic_record["market_anchor"] = canonical_market_anchor(primary_market)
+    topic_record["updated_at"] = iso_now()
+    save_state(state)
+
+
 def run_mirofish_pipeline(
     *,
     topic: str,
-    seed_path: Path,
+    source_path: Path,
     primary_market: Dict[str, Any],
     mirofish_base_url: str,
     mirofish_root: Path,
@@ -1439,18 +2149,25 @@ def run_mirofish_pipeline(
     enable_graph_memory_update: bool,
     generate_report: bool,
     run_dir: Path,
+    profile_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     require_requests()
+    if mirofish_uses_local_llm(mirofish_root):
+        max_rounds = min(max_rounds, get_local_sim_setting(mirofish_root, "LOCAL_SIM_MAX_ROUNDS", 16))
+        parallel_profile_count = min(
+            parallel_profile_count,
+            get_local_sim_setting(mirofish_root, "LOCAL_SIM_PARALLEL_PROFILE_COUNT", 3),
+        )
     requirement = generate_simulation_requirement(topic, primary_market)
-    mime_type = mimetypes.guess_type(seed_path.name)[0] or "text/markdown"
-    with seed_path.open("rb") as handle:
+    mime_type = mimetypes.guess_type(source_path.name)[0] or "text/markdown"
+    with source_path.open("rb") as handle:
         ontology_payload = requests.post(
             f"{mirofish_base_url.rstrip('/')}/api/graph/ontology/generate",
             data={
                 "simulation_requirement": requirement,
-                "project_name": f"Hermes {topic} {seed_path.parent.name}",
+                "project_name": f"Hermes {topic} {source_path.parent.name}",
             },
-            files={"files": (seed_path.name, handle, mime_type)},
+            files={"files": (source_path.name, handle, mime_type)},
             headers={"User-Agent": USER_AGENT},
             timeout=(10, 300),
         )
@@ -1489,6 +2206,19 @@ def run_mirofish_pipeline(
     simulation_id = (create_payload.get("data") or {}).get("simulation_id")
     if not simulation_id:
         raise PipelineError("MiroFish simulation creation did not return simulation_id")
+    link_path = write_mirofish_link(
+        run_dir,
+        {
+            "topic": topic,
+            "primary_market_question": primary_market.get("question"),
+            "mirofish_root": str(mirofish_root),
+            "mirofish_base_url": mirofish_base_url,
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "simulation_id": simulation_id,
+            "status": "created",
+        },
+    )
 
     prepare_payload = request_json(
         "POST",
@@ -1497,14 +2227,31 @@ def run_mirofish_pipeline(
             "simulation_id": simulation_id,
             "use_llm_for_profiles": use_llm_for_profiles,
             "parallel_profile_count": parallel_profile_count,
+            "profile_overrides": profile_overrides or None,
         },
     )
     prepare_data = prepare_payload.get("data") or {}
     prepare_task_id = prepare_data.get("task_id")
+    write_mirofish_link(
+        run_dir,
+        {
+            "simulation_id": simulation_id,
+            "prepare_task_id": prepare_task_id,
+            "status": "preparing" if prepare_task_id else str(prepare_data.get("status") or "created"),
+        },
+    )
     if prepare_task_id:
         poll_prepare(mirofish_base_url, simulation_id, prepare_task_id)
     elif prepare_data.get("status") not in {"ready"}:
         raise PipelineError("MiroFish prepare did not return a task_id or ready status")
+    write_mirofish_link(
+        run_dir,
+        {
+            "simulation_id": simulation_id,
+            "prepare_task_id": prepare_task_id,
+            "status": "ready",
+        },
+    )
 
     start_payload = request_json(
         "POST",
@@ -1516,7 +2263,27 @@ def run_mirofish_pipeline(
             "enable_graph_memory_update": enable_graph_memory_update,
         },
     )
+    write_mirofish_link(
+        run_dir,
+        {
+            "simulation_id": simulation_id,
+            "prepare_task_id": prepare_task_id,
+            "start_data": start_payload.get("data") or {},
+            "status": "running",
+            "link_path": str(link_path),
+        },
+    )
     run_state = poll_run(mirofish_base_url, simulation_id)
+    write_mirofish_link(
+        run_dir,
+        {
+            "simulation_id": simulation_id,
+            "prepare_task_id": prepare_task_id,
+            "start_data": start_payload.get("data") or {},
+            "run_state": run_state,
+            "status": str(run_state.get("runner_status") or "unknown"),
+        },
+    )
 
     report_data: Dict[str, Any] = {}
     if generate_report:
@@ -1528,6 +2295,19 @@ def run_mirofish_pipeline(
         report_data = report_payload.get("data") or {}
 
     summary = summarize_simulation_run(run_dir, mirofish_root, simulation_id, primary_market, topic)
+    close_env_result: Dict[str, Any] = {}
+    if str(run_state.get("runner_status") or "").lower() == "completed":
+        try:
+            close_env_result = close_simulation_env(mirofish_base_url, simulation_id)
+        except Exception as exc:
+            close_env_result = {"success": False, "error": str(exc)}
+        write_mirofish_link(
+            run_dir,
+            {
+                "simulation_id": simulation_id,
+                "close_env": close_env_result,
+            },
+        )
     return {
         "project_id": project_id,
         "graph_id": graph_id,
@@ -1538,16 +2318,11 @@ def run_mirofish_pipeline(
         "run_state": run_state,
         "report": report_data,
         "summary": summary,
+        "close_env": close_env_result,
     }
 
 
-def run_topic(
-    config: Dict[str, Any],
-    *,
-    simulate: bool,
-    generate_report: bool,
-    runtime_overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+def run_topic(config: Dict[str, Any], *, simulate: bool, generate_report: bool) -> Dict[str, Any]:
     topic_id = config["topic_id"]
     topic = config["topic"]
     market_query = config.get("market_query") or topic
@@ -1564,7 +2339,12 @@ def run_topic(
     use_llm_for_profiles = bool(config.get("use_llm_for_profiles", False))
     parallel_profile_count = int(config.get("parallel_profile_count") or DEFAULT_PARALLEL_PROFILE_COUNT)
     enable_graph_memory_update = bool(config.get("enable_graph_memory_update", False))
-    headless_modules = normalize_headless_modules(config.get("headless_modules"))
+    profile_overrides_file = load_profile_overrides_file(config.get("profile_overrides_path"))
+    market_anchor = config.get("market_anchor") if isinstance(config.get("market_anchor"), dict) else {}
+    headless_modules = dedupe_strings(
+        normalize_headless_modules(config.get("headless_modules"))
+        + ["intelligence_findings", "polymarket_intel"]
+    )
     module_params = normalize_module_params(config.get("module_params"))
 
     timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
@@ -1578,10 +2358,35 @@ def run_topic(
     if simulate and not mirofish_status["ok"]:
         raise PipelineError(f"MiroFish backend is unavailable: {mirofish_status}")
 
-    markets = select_markets(market_query, max_deadline_days)
+    markets = select_markets(
+        market_query,
+        max_deadline_days,
+        topic=topic,
+        keywords=keywords,
+        region_codes=region_codes,
+        market_anchor=market_anchor,
+    )
+    if config.get("_persist_market_anchor"):
+        persist_topic_market_anchor(topic_id, markets[0])
+    module_params = merge_module_params(
+        module_params,
+        topic=topic,
+        keywords=keywords,
+        primary_market=markets[0],
+        region_codes=region_codes,
+        days=days,
+    )
     news = {"feeds": [], "items": [], "themes": [], "actors": []}
     if "news_rss" in headless_modules:
-        news = fetch_news_snapshot(worldosint_base, topic, days, keywords, module_params.get("news_rss"))
+        news = fetch_news_snapshot(
+            worldosint_base,
+            topic,
+            days,
+            keywords,
+            markets[0],
+            region_codes,
+            module_params.get("news_rss"),
+        )
     context = {"riskRows": [], "usniArticleUrl": "", "usniArticleTitle": "", "theaterAssets": []}
     if "intelligence_risk_scores" in headless_modules or "military_usni" in headless_modules:
         try:
@@ -1594,16 +2399,13 @@ def run_topic(
         [name for name in headless_modules if name not in built_in_modules],
         module_params,
     )
-    feed_quality = assess_feed_quality(news, context, headless_modules, extra_modules)
-    simulation_plan = select_simulation_plan(config, feed_quality, runtime_overrides=runtime_overrides)
-    selected_rounds = int(simulation_plan["selected"]["max_rounds"])
-    selected_profiles = int(simulation_plan["selected"]["parallel_profile_count"])
-    require_feed_confirmation = bool((runtime_overrides or {}).get("require_feed_confirmation", False))
-    if simulate and require_feed_confirmation and feed_quality.get("status") == "poor":
-        raise PipelineError(
-            f"Feed confirmation failed: quality is poor (score={feed_quality.get('score')}). "
-            "Adjust modules/keywords or run without --require-feed-confirmation."
-        )
+    extra_modules = curate_extra_modules(
+        extra_modules,
+        topic=topic,
+        keywords=keywords,
+        primary_market=markets[0],
+        region_codes=region_codes,
+    )
 
     generated_at = iso_now()
     seed_markdown = build_seed_markdown(
@@ -1619,9 +2421,18 @@ def run_topic(
         worldosint_base,
         headless_modules,
     )
+    simulation_brief_markdown = build_simulation_brief_markdown(
+        topic=topic,
+        primary_market=markets[0],
+        news=news,
+        context=context,
+        extra_modules=extra_modules,
+    )
     seed_path = run_dir / f"{topic_id}_seed.md"
+    simulation_brief_path = run_dir / f"{topic_id}_simulation_brief.md"
     snapshot_path = run_dir / f"{topic_id}_snapshot.json"
     seed_path.write_text(seed_markdown, encoding="utf-8")
+    simulation_brief_path.write_text(simulation_brief_markdown, encoding="utf-8")
 
     snapshot = {
         "generated_at": generated_at,
@@ -1634,13 +2445,14 @@ def run_topic(
         "worldosint_base_url": worldosint_base,
         "mirofish_base_url": mirofish_base,
         "markets": markets,
+        "market_anchor": canonical_market_anchor(markets[0]),
         "news": news,
         "context": context,
         "extra_modules": extra_modules,
-        "feed_quality": feed_quality,
-        "simulation_plan": simulation_plan,
         "seed_path": str(seed_path),
+        "simulation_brief_path": str(simulation_brief_path),
         "simulate": simulate,
+        "profile_overrides_path": profile_overrides_file.get("path", ""),
     }
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1649,29 +2461,29 @@ def run_topic(
         "topic": topic,
         "run_dir": str(run_dir),
         "seed_path": str(seed_path),
+        "simulation_brief_path": str(simulation_brief_path),
         "snapshot_path": str(snapshot_path),
         "primary_market": markets[0],
         "related_markets": markets[1:],
         "worldosint_status": world_status,
         "mirofish_status": mirofish_status,
-        "feed_quality": feed_quality,
-        "simulation_plan": simulation_plan,
     }
 
     if simulate:
         result["mirofish"] = run_mirofish_pipeline(
             topic=topic,
-            seed_path=seed_path,
+            source_path=simulation_brief_path,
             primary_market=markets[0],
             mirofish_base_url=mirofish_base,
             mirofish_root=mirofish_root,
             platform=platform,
-            max_rounds=selected_rounds,
+            max_rounds=max_rounds,
             use_llm_for_profiles=use_llm_for_profiles,
-            parallel_profile_count=selected_profiles,
+            parallel_profile_count=parallel_profile_count,
             enable_graph_memory_update=enable_graph_memory_update,
             generate_report=generate_report,
             run_dir=run_dir,
+            profile_overrides=profile_overrides_file.get("payload") or None,
         )
 
     summary_lines = []
@@ -1684,18 +2496,17 @@ def run_topic(
     summary_lines.append("")
     summary_lines.append(f"- {markets[0]['question']}")
     summary_lines.append(f"- Bid / ask: {pct(markets[0]['bestBid'])} / {pct(markets[0]['bestAsk'])}")
-    summary_lines.append(f"- Deadline: {short_dt(markets[0]['endDate'])}")
+    summary_lines.append(f"- Resolution deadline: {markets[0].get('resolutionDeadline') or resolved_market_deadline_label(markets[0])}")
     summary_lines.append(f"- URL: {markets[0]['url']}")
     summary_lines.append(f"- WorldOSINT modules: {', '.join(headless_modules)}")
-    summary_lines.append(f"- Feed quality: {feed_quality.get('status')} (score={feed_quality.get('score')})")
-    summary_lines.append(
-        f"- Simulation plan: mode={simulation_plan.get('mode')} rounds={selected_rounds} profiles={selected_profiles}"
-    )
     summary_lines.append("")
     summary_lines.append("## Artifacts")
     summary_lines.append("")
     summary_lines.append(f"- Seed packet: `{seed_path}`")
+    summary_lines.append(f"- Simulation brief: `{simulation_brief_path}`")
     summary_lines.append(f"- Raw snapshot: `{snapshot_path}`")
+    if profile_overrides_file.get("path"):
+        summary_lines.append(f"- Profile overrides: `{profile_overrides_file['path']}`")
     if simulate:
         miro = result["mirofish"]
         summary_lines.append(f"- Simulation ID: `{miro['simulation_id']}`")
@@ -1704,6 +2515,7 @@ def run_topic(
         summary_lines.append(f"- Total actions: {miro['run_state'].get('total_actions_count')}")
     summary_path = run_dir / "run_summary.md"
     summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    compile_artifacts(data_root=DATA_DIR, mirofish_root=mirofish_root, topic_id=topic_id)
     result["summary_path"] = str(summary_path)
     return result
 
@@ -1754,59 +2566,74 @@ def topic_from_path(run_dir: Path) -> str:
     return run_dir.parent.name
 
 
+def ensure_compiled_run_artifacts(run_dir: Path, mirofish_root: Path) -> Dict[str, Any]:
+    decision_path = run_dir / "decision_artifact.json"
+    if not decision_path.exists():
+        compile_run_artifact(run_dir, mirofish_root)
+    artifact = load_json_file(decision_path)
+    alerts_path = run_dir / "alerts.json"
+    if not alerts_path.exists():
+        topic_id = str(artifact.get("topic_id") or topic_from_path(run_dir) or "")
+        compile_artifacts(data_root=DATA_DIR, mirofish_root=mirofish_root, topic_id=topic_id)
+    return artifact
+
+
 def build_console_payload(run_dir: Path, mirofish_root: Path) -> Dict[str, Any]:
+    artifact = ensure_compiled_run_artifacts(run_dir, mirofish_root)
     snapshot = load_run_snapshot(run_dir)
-    summary_markdown = load_run_summary_markdown(run_dir)
-    primary_market = (snapshot.get("markets") or [{}])[0]
-    simulation_id = parse_markdown_value(summary_markdown, "Simulation ID")
-    simulation_entry = None
-    if simulation_id:
-        for entry in iter_simulation_entries(mirofish_root, include_actions=True):
-            if entry.get("simulation_id") == simulation_id:
-                simulation_entry = entry
-                break
-    feed_count = len((snapshot.get("news") or {}).get("items") or [])
-    theme_rows = (snapshot.get("news") or {}).get("themes") or []
-    top_theme = theme_rows[0]["theme"] if theme_rows else "n/a"
-    top_theme_count = theme_rows[0]["count"] if theme_rows else 0
+    alerts_payload = load_json_file(run_dir / "alerts.json")
+    evidence_payload = load_json_file(run_dir / "evidence_lineage.json")
+    market = artifact.get("market") or {}
+    signals = artifact.get("signals") or {}
+    forecast = artifact.get("forecast") or {}
+    simulation = artifact.get("simulation") or {}
+    branch = artifact.get("branch") or {}
+    extra_modules = snapshot.get("extra_modules") or {}
+    findings = (((extra_modules.get("intelligence_findings") or {}).get("data") or {}).get("findings") or [])
+    finding_summary = (((extra_modules.get("intelligence_findings") or {}).get("data") or {}).get("summary") or {})
+    market_intel = ((extra_modules.get("polymarket_intel") or {}).get("data") or {})
     risk_rows = (snapshot.get("context") or {}).get("riskRows") or []
     risk_summary = ", ".join(
         f"{row.get('region', 'n/a')} {row.get('combinedScore', 'n/a')}"
         for row in risk_rows[:4]
     ) or "n/a"
-    modules = snapshot.get("headless_modules") or []
-    run_status = "seed-only"
-    total_actions = 0
-    top_agents: List[str] = []
-    counterfactual_note = ""
-    if simulation_entry:
-        run_status = simulation_entry.get("status") or "unknown"
-        total_actions = int(simulation_entry.get("twitter_actions") or 0) + int(simulation_entry.get("reddit_actions") or 0)
-        top_agents_payload = parse_action_log(Path(simulation_entry["artifact_paths"]["twitter_log"])).get("top_agents", [])
-        top_agents = [f"{name} ({count})" for name, count in top_agents_payload[:3]]
-        cf = simulation_entry.get("counterfactual") or {}
-        if cf.get("enabled"):
-            counterfactual_note = f"branch of {cf.get('base_simulation_id') or 'unknown'} at round {cf.get('injection_round') or 'n/a'}"
+    top_theme_rows = signals.get("top_themes") or []
+    top_agents = [
+        f"{name} ({count})"
+        for name, count in (simulation.get("top_agents") or [])[:3]
+    ]
     return {
         "topic_id": topic_from_path(run_dir),
         "run_dir": str(run_dir),
-        "generated_at": snapshot.get("generated_at") or "n/a",
-        "topic": snapshot.get("topic") or "n/a",
-        "market_question": primary_market.get("question") or "n/a",
-        "market_bid": pct(primary_market.get("bestBid")),
-        "market_ask": pct(primary_market.get("bestAsk")),
-        "market_deadline": short_dt(primary_market.get("endDate")),
-        "market_url": primary_market.get("url") or "n/a",
-        "feed_count": feed_count,
-        "top_theme": top_theme,
-        "top_theme_count": top_theme_count,
+        "generated_at": artifact.get("generated_at") or "n/a",
+        "topic": artifact.get("topic") or "n/a",
+        "market_question": market.get("question") or "n/a",
+        "market_bid": market.get("best_bid"),
+        "market_ask": market.get("best_ask"),
+        "market_deadline": market.get("deadline_display") or "n/a",
+        "market_url": market.get("url") or "n/a",
+        "market_mid": forecast.get("market_yes_probability"),
+        "predicted_yes": forecast.get("predicted_yes_probability"),
+        "forecast_call": forecast.get("call") or "n/a",
+        "forecast_confidence": forecast.get("confidence"),
+        "forecast_thesis": forecast.get("thesis") or "",
+        "feed_count": signals.get("headline_count") or 0,
+        "top_theme": top_theme_rows[0]["theme"] if top_theme_rows else "n/a",
+        "top_theme_count": top_theme_rows[0]["count"] if top_theme_rows else 0,
         "risk_summary": risk_summary,
-        "modules": modules,
-        "simulation_id": simulation_id or "n/a",
-        "run_status": run_status,
-        "total_actions": total_actions,
+        "finding_count": len(findings),
+        "finding_raw_total": finding_summary.get("raw_total") or 0,
+        "market_intel_trades": market_intel.get("matched_trade_count") or 0,
+        "market_intel_notional": market_intel.get("matched_trades_notional") or 0,
+        "modules": signals.get("module_set") or [],
+        "simulation_id": simulation.get("simulation_id") or "n/a",
+        "run_status": simulation.get("status") or "seed-only",
+        "total_actions": int(simulation.get("lines") or 0),
         "top_agents": top_agents,
-        "counterfactual_note": counterfactual_note,
+        "counterfactual_note": f"branch of {branch.get('base_simulation_id') or 'unknown'} at round {branch.get('injection_round') or 'n/a'}" if branch.get("enabled") else "",
+        "drivers": forecast.get("drivers") or [],
+        "alerts": alerts_payload.get("alerts") or [],
+        "evidence_count": len(evidence_payload.get("evidence") or []),
     }
 
 
@@ -1820,6 +2647,8 @@ def render_ascii_dashboard(payload: Dict[str, Any], width: int) -> str:
     market_lines = [
         format_kv("market", payload.get("market_question"), width - 4),
         format_kv("bid -> ask", f"{payload.get('market_bid')} -> {payload.get('market_ask')}", width - 4),
+        format_kv("market_mid", pct(payload.get("market_mid")), width - 4),
+        format_kv("predicted_yes", pct(payload.get("predicted_yes")), width - 4),
         format_kv("deadline", payload.get("market_deadline"), width - 4),
         format_kv("url", payload.get("market_url"), width - 4),
     ]
@@ -1827,22 +2656,44 @@ def render_ascii_dashboard(payload: Dict[str, Any], width: int) -> str:
         format_kv("rss_headlines", payload.get("feed_count"), width - 4),
         format_kv("top_theme", f"{payload.get('top_theme')} ({payload.get('top_theme_count')})", width - 4),
         format_kv("risk", payload.get("risk_summary"), width - 4),
+        format_kv("intel_findings", f"{payload.get('finding_count')} relevant / {payload.get('finding_raw_total')} raw", width - 4),
+        format_kv("market_flow", f"{payload.get('market_intel_trades')} matched trades / ${payload.get('market_intel_notional')}", width - 4),
         format_kv("modules", ", ".join(payload.get("modules") or []), width - 4),
     ]
     run_lines = [
         format_kv("simulation_id", payload.get("simulation_id"), width - 4),
         format_kv("status", payload.get("run_status"), width - 4),
+        format_kv("call", payload.get("forecast_call"), width - 4),
+        format_kv("confidence", pct(payload.get("forecast_confidence")), width - 4),
         format_kv("total_actions", payload.get("total_actions"), width - 4),
         format_kv("top_agents", ", ".join(payload.get("top_agents") or ["n/a"]), width - 4),
     ]
     if payload.get("counterfactual_note"):
         run_lines.append(format_kv("counterfactual", payload.get("counterfactual_note"), width - 4))
+    driver_lines = [
+        format_kv(
+            f"driver{index + 1}",
+            f"{row.get('label')} [{row.get('polarity')}] strength={row.get('strength')}",
+            width - 4,
+        )
+        for index, row in enumerate((payload.get("drivers") or [])[:4])
+    ] or ["No compiled drivers yet."]
+    alert_lines = [
+        format_kv(
+            row.get("level", "info"),
+            row.get("message", ""),
+            width - 4,
+        )
+        for row in (payload.get("alerts") or [])[:4]
+    ] or ["No alerts."]
     return "\n".join(
         [
             ascii_box("PREDIHERMES CONSOLE", header_lines, width=width),
             ascii_box("MARKET BOARD", market_lines, width=width),
             ascii_box("OSINT SIGNALS", signal_lines, width=width),
             ascii_box("SIMULATION", run_lines, width=width),
+            ascii_box("DECISION DRIVERS", driver_lines, width=width),
+            ascii_box("ALERTS", alert_lines, width=width),
         ]
     )
 
@@ -1860,21 +2711,179 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compile_artifacts(args: argparse.Namespace) -> int:
+    payload = compile_artifacts(
+        data_root=DATA_DIR,
+        mirofish_root=resolve_mirofish_root(args.mirofish_root),
+        topic_id=args.topic_id,
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def resolve_graph_id_from_simulation(simulation_id: str, mirofish_root: Path) -> str:
+    sim_dir = mirofish_root / "backend" / "uploads" / "simulations" / simulation_id
+    config_path = sim_dir / "simulation_config.json"
+    if not config_path.exists():
+        raise PipelineError(f"Simulation config not found for {simulation_id}: {config_path}")
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    graph_id = str(config.get("graph_id") or "").strip()
+    if not graph_id:
+        raise PipelineError(f"Simulation {simulation_id} is missing graph_id in {config_path}")
+    return graph_id
+
+
+def cmd_profile_template(args: argparse.Namespace) -> int:
+    mirofish_root = resolve_mirofish_root(args.mirofish_root)
+    graph_id = str(args.graph_id or "").strip()
+    if not graph_id and args.simulation_id:
+        graph_id = resolve_graph_id_from_simulation(args.simulation_id, mirofish_root)
+    if not graph_id:
+        raise PipelineError("Provide either --graph-id or --simulation-id")
+
+    reader = ZepEntityReader()
+    filtered = reader.filter_defined_entities(
+        graph_id=graph_id,
+        defined_entity_types=args.entity_type or None,
+        enrich_with_edges=False,
+    )
+    generator = OasisProfileGenerator(graph_id=graph_id)
+    manifest = generator.build_profile_manifest(filtered.entities)
+    manifest.update(
+        {
+            "graph_id": graph_id,
+            "simulation_id": args.simulation_id or "",
+            "rejected_count": filtered.rejected_count,
+            "rejected_examples": filtered.rejected_examples,
+        }
+    )
+    output_path = Path(args.output).expanduser() if args.output else (DATA_DIR / "profile-manifests" / f"{graph_id}.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"graph_id": graph_id, "output_path": str(output_path), "entity_count": manifest["entity_count"]}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_create_branch(args: argparse.Namespace) -> int:
+    actor: Dict[str, Any] = {
+        "name": args.actor_name,
+        "entity_type": args.entity_type,
+    }
+    optional_scalar_fields = [
+        ("profession", args.profession),
+        ("bio", args.bio),
+        ("persona", args.persona),
+        ("country", args.country),
+        ("mbti", args.mbti),
+        ("gender", args.gender),
+        ("stance", args.stance),
+    ]
+    for key, value in optional_scalar_fields:
+        if value:
+            actor[key] = value
+    if args.interested_topic:
+        actor["interested_topics"] = args.interested_topic
+    if args.activity_level is not None:
+        actor["activity_level"] = args.activity_level
+    if args.influence_weight is not None:
+        actor["influence_weight"] = args.influence_weight
+    if args.posts_per_hour is not None:
+        actor["posts_per_hour"] = args.posts_per_hour
+    if args.comments_per_hour is not None:
+        actor["comments_per_hour"] = args.comments_per_hour
+
+    create_payload = request_json(
+        "POST",
+        f"{args.mirofish_base_url.rstrip('/')}/api/simulation/{args.base_simulation_id}/counterfactual",
+        json={
+            "actor": actor,
+            "injection_round": int(args.injection_round),
+            "opening_statement": args.opening_statement or "",
+        },
+    )
+    data = create_payload.get("data") or {}
+    output = {
+        "base_simulation_id": args.base_simulation_id,
+        "simulation": data.get("simulation") or {},
+        "counterfactual": data.get("counterfactual") or {},
+    }
+
+    new_simulation_id = str((data.get("simulation") or {}).get("simulation_id") or "").strip()
+    if args.start and new_simulation_id:
+        start_payload = request_json(
+            "POST",
+            f"{args.mirofish_base_url.rstrip('/')}/api/simulation/start",
+            json={
+                "simulation_id": new_simulation_id,
+                "platform": args.platform,
+                "max_rounds": int(args.max_rounds),
+                "enable_graph_memory_update": bool(args.enable_graph_memory_update),
+            },
+        )
+        output["start"] = start_payload.get("data") or {}
+        if args.wait:
+            output["run_state"] = poll_run(args.mirofish_base_url, new_simulation_id)
+
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_tui(args: argparse.Namespace) -> int:
+    repo_root = PIPELINE_ROOT
+    mirofish_root = resolve_mirofish_root(args.mirofish_root)
+    compile_artifacts(
+        data_root=DATA_DIR,
+        mirofish_root=mirofish_root,
+    )
+    command = [
+        "cargo",
+        "run",
+        "--release" if not args.debug_build else "",
+        "--manifest-path",
+        str(repo_root / "tools" / "predihermes_tui" / "Cargo.toml"),
+        "--",
+        "--data-root",
+        str(DATA_DIR),
+        "--compile-python",
+        sys.executable,
+        "--compile-script",
+        str(Path(__file__).resolve()),
+        "--compile-mirofish-root",
+        str(mirofish_root),
+        "--auto-refresh-seconds",
+        "4",
+    ]
+    if args.topic_id:
+        command.extend(["--topic-id", args.topic_id])
+    command = [part for part in command if part]
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError as exc:
+        raise PipelineError("Rust toolchain not found. Install cargo/rustup before launching the PrediHermes workbench.") from exc
+    return 0
+
+
 def cmd_command_catalog(args: argparse.Namespace) -> int:
     items = [
         "health: check WorldOSINT and MiroFish availability",
         "list-worldosint-modules: discover available WorldOSINT modules",
         "track-topic: persist a reusable topic profile",
         "update-topic: modular edits (modules, params, rounds, platform)",
-        "plan-tracked <topic_id>: validate feed quality and auto/manual simulation plan",
         "run-tracked <topic_id> [--simulate]: execute latest pipeline path",
+        "profile-template --graph-id/--simulation-id: export an operator-editable cast manifest",
+        "create-branch --base-simulation-id ... --actor-name ...: create a counterfactual branch actor",
         "lookup-sim --query/--actor: resolve base + branch runs from local artifacts",
+        "compile-artifacts [--topic-id]: refresh decision, evidence, accountability, and branch ledgers",
         "dashboard [--topic-id]: show ASCII run metrics in Hermes CLI",
+        "tui [--topic-id] [--debug-build]: open the Rust local workbench on compiled artifacts",
     ]
     prompts = [
         "Use PrediHermes list-worldosint-modules and suggest modules for maritime conflict monitoring.",
-        "Use PrediHermes plan-tracked iran-conflict and confirm feed quality before simulation.",
         "Use PrediHermes dashboard for iran-conflict and summarize risk drift.",
+        "Use PrediHermes compile-artifacts and tell me which topic has the strongest thesis drift.",
+        "Use PrediHermes profile-template for sim_ae05684dad1b so I can edit the cast locally before rerunning.",
+        "Use PrediHermes create-branch from sim_ae05684dad1b with actor Swiss backchannel envoy at round 8 and then monitor the branch.",
+        "Use PrediHermes tui for the local workbench and focus on iran-conflict.",
         "Use PrediHermes lookup-sim for actor Shadow Hormuz and compare to base.",
         "Use PrediHermes update-topic to add military_naval and set max rounds to 36.",
     ]
@@ -1893,6 +2902,7 @@ def cmd_update_topic(args: argparse.Namespace) -> int:
     topic_record = state.get("topics", {}).get(args.topic_id)
     if not topic_record:
         raise PipelineError(f"Tracked topic '{args.topic_id}' does not exist")
+    clear_market_anchor = False
 
     modules = normalize_headless_modules(topic_record.get("headless_modules"))
     set_modules = (args.set_headless_module or []) + (args.set_module or [])
@@ -1929,22 +2939,53 @@ def cmd_update_topic(args: argparse.Namespace) -> int:
             module_params.pop(text, None)
     topic_record["module_params"] = module_params
 
+    if args.set_topic:
+        topic_record["topic"] = args.set_topic
+        clear_market_anchor = True
+    if args.set_market_query:
+        topic_record["market_query"] = args.set_market_query
+        clear_market_anchor = True
+    keywords = dedupe_strings(topic_record.get("keywords") or [])
+    if args.set_keyword:
+        keywords = dedupe_strings(args.set_keyword)
+        clear_market_anchor = True
+    for keyword in args.add_keyword:
+        if keyword not in keywords:
+            keywords.append(keyword)
+            clear_market_anchor = True
+    if args.remove_keyword:
+        remove_set = set(args.remove_keyword)
+        keywords = [keyword for keyword in keywords if keyword not in remove_set]
+        clear_market_anchor = True
+    topic_record["keywords"] = keywords
+
+    region_codes = dedupe_strings(topic_record.get("region_codes") or [])
+    for code in args.add_region_code:
+        if code not in region_codes:
+            region_codes.append(code)
+            clear_market_anchor = True
+    if args.remove_region_code:
+        remove_codes = set(args.remove_region_code)
+        region_codes = [code for code in region_codes if code not in remove_codes]
+        clear_market_anchor = True
+    topic_record["region_codes"] = region_codes
+
     if args.set_platform:
         topic_record["platform"] = args.set_platform
     if args.set_max_rounds is not None:
         topic_record["max_rounds"] = int(args.set_max_rounds)
     if args.set_parallel_profile_count is not None:
         topic_record["parallel_profile_count"] = int(args.set_parallel_profile_count)
-    if args.set_simulation_mode:
-        topic_record["simulation_mode"] = args.set_simulation_mode
-    if args.set_target_agents is not None:
-        topic_record["target_agents"] = int(args.set_target_agents)
     if args.set_worldosint_base_url:
         topic_record["worldosint_base_url"] = args.set_worldosint_base_url
     if args.set_mirofish_base_url:
         topic_record["mirofish_base_url"] = args.set_mirofish_base_url
     if args.set_mirofish_root:
         topic_record["mirofish_root"] = args.set_mirofish_root
+    if args.set_profile_overrides_path:
+        topic_record["profile_overrides_path"] = args.set_profile_overrides_path
+    if clear_market_anchor:
+        topic_record.pop("market_anchor", None)
 
     topic_record["updated_at"] = iso_now()
     save_state(state)
@@ -1957,6 +2998,7 @@ def cmd_health(args: argparse.Namespace) -> int:
     payload = {
         "worldosint": check_worldosint_service(args.worldosint_base_url),
         "mirofish": check_service(args.mirofish_base_url, "/health"),
+        "llm": check_llm_backend(mirofish_root),
         "state_path": str(STATE_PATH),
         "state_exists": STATE_PATH.exists(),
         "mirofish_root": str(mirofish_root),
@@ -1984,11 +3026,11 @@ def cmd_track_topic(args: argparse.Namespace) -> int:
         "mirofish_root": args.mirofish_root,
         "platform": args.platform,
         "max_rounds": args.max_rounds,
-        "simulation_mode": args.simulation_mode,
-        "target_agents": args.target_agents,
         "use_llm_for_profiles": bool(args.use_llm_for_profiles),
         "parallel_profile_count": args.parallel_profile_count,
         "enable_graph_memory_update": bool(args.enable_graph_memory_update),
+        "profile_overrides_path": args.profile_overrides_path,
+        "market_anchor": {},
         "created_at": iso_now(),
         "updated_at": iso_now(),
     }
@@ -2031,31 +3073,16 @@ def topic_from_args(args: argparse.Namespace) -> Dict[str, Any]:
         "mirofish_root": args.mirofish_root,
         "platform": args.platform,
         "max_rounds": args.max_rounds,
-        "simulation_mode": args.simulation_mode,
-        "target_agents": args.target_agents,
         "use_llm_for_profiles": bool(args.use_llm_for_profiles),
         "parallel_profile_count": args.parallel_profile_count,
         "enable_graph_memory_update": bool(args.enable_graph_memory_update),
-    }
-
-
-def runtime_overrides_from_args(args: argparse.Namespace) -> Dict[str, Any]:
-    return {
-        "simulation_mode": getattr(args, "simulation_mode", None),
-        "target_rounds": getattr(args, "target_rounds", None),
-        "target_agents": getattr(args, "target_agents", None),
-        "require_feed_confirmation": bool(getattr(args, "require_feed_confirmation", False)),
+        "profile_overrides_path": args.profile_overrides_path,
     }
 
 
 def cmd_run_topic(args: argparse.Namespace) -> int:
     config = topic_from_args(args)
-    result = run_topic(
-        config,
-        simulate=args.simulate,
-        generate_report=args.generate_report,
-        runtime_overrides=runtime_overrides_from_args(args),
-    )
+    result = run_topic(config, simulate=args.simulate, generate_report=args.generate_report)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -2065,37 +3092,12 @@ def cmd_run_tracked(args: argparse.Namespace) -> int:
     config = state.get("topics", {}).get(args.topic_id)
     if not config:
         raise PipelineError(f"Tracked topic '{args.topic_id}' does not exist")
-    result = run_topic(
-        config,
-        simulate=args.simulate,
-        generate_report=args.generate_report,
-        runtime_overrides=runtime_overrides_from_args(args),
-    )
+    config = dict(config)
+    config["_persist_market_anchor"] = True
+    if getattr(args, "profile_overrides_path", ""):
+        config["profile_overrides_path"] = args.profile_overrides_path
+    result = run_topic(config, simulate=args.simulate, generate_report=args.generate_report)
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
-def cmd_plan_tracked(args: argparse.Namespace) -> int:
-    state = load_state()
-    config = state.get("topics", {}).get(args.topic_id)
-    if not config:
-        raise PipelineError(f"Tracked topic '{args.topic_id}' does not exist")
-    result = run_topic(
-        config,
-        simulate=False,
-        generate_report=False,
-        runtime_overrides=runtime_overrides_from_args(args),
-    )
-    output = {
-        "topic_id": result.get("topic_id"),
-        "topic": result.get("topic"),
-        "run_dir": result.get("run_dir"),
-        "feed_quality": result.get("feed_quality"),
-        "simulation_plan": result.get("simulation_plan"),
-        "primary_market": result.get("primary_market"),
-        "summary_path": result.get("summary_path"),
-    }
-    print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -2199,8 +3201,6 @@ def build_parser() -> argparse.ArgumentParser:
         "platform": DEFAULT_PLATFORM,
         "max_rounds": DEFAULT_MAX_ROUNDS,
         "parallel_profile_count": DEFAULT_PARALLEL_PROFILE_COUNT,
-        "simulation_mode": DEFAULT_SIMULATION_MODE,
-        "target_agents": 0,
     }
 
     def add_topic_config_args(target: argparse.ArgumentParser) -> None:
@@ -2210,6 +3210,7 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--theater-region", action="append", default=[])
         target.add_argument("--headless-module", action="append", default=[])
         target.add_argument("--module-param", action="append", default=[])
+        target.add_argument("--profile-overrides-path", default="")
         for key, value in common_defaults.items():
             target.add_argument(f"--{key.replace('_', '-')}", default=value, type=type(value) if not isinstance(value, str) else str)
         target.add_argument("--use-llm-for-profiles", action="store_true")
@@ -2236,6 +3237,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     update_topic = subparsers.add_parser("update-topic", help="Modular updates for a tracked topic profile")
     update_topic.add_argument("topic_id")
+    update_topic.add_argument("--set-topic", default="")
+    update_topic.add_argument("--set-market-query", default="")
+    update_topic.add_argument("--set-keyword", action="append", default=[])
+    update_topic.add_argument("--add-keyword", action="append", default=[])
+    update_topic.add_argument("--remove-keyword", action="append", default=[])
+    update_topic.add_argument("--add-region-code", action="append", default=[])
+    update_topic.add_argument("--remove-region-code", action="append", default=[])
     update_topic.add_argument("--set-headless-module", action="append", default=[])
     update_topic.add_argument("--add-headless-module", action="append", default=[])
     update_topic.add_argument("--remove-headless-module", action="append", default=[])
@@ -2247,11 +3255,10 @@ def build_parser() -> argparse.ArgumentParser:
     update_topic.add_argument("--set-platform", choices=["twitter", "reddit", "parallel"])
     update_topic.add_argument("--set-max-rounds", type=int)
     update_topic.add_argument("--set-parallel-profile-count", type=int)
-    update_topic.add_argument("--set-simulation-mode", choices=["auto", "manual"])
-    update_topic.add_argument("--set-target-agents", type=int)
     update_topic.add_argument("--set-worldosint-base-url", default="")
     update_topic.add_argument("--set-mirofish-base-url", default="")
     update_topic.add_argument("--set-mirofish-root", default="")
+    update_topic.add_argument("--set-profile-overrides-path", default="")
     update_topic.set_defaults(func=cmd_update_topic)
 
     def add_run_args(run_parser: argparse.ArgumentParser, tracked: bool = False) -> None:
@@ -2261,10 +3268,8 @@ def build_parser() -> argparse.ArgumentParser:
             add_topic_config_args(run_parser)
         else:
             run_parser.add_argument("topic_id")
-            run_parser.add_argument("--simulation-mode", choices=["auto", "manual"], default=None)
-            run_parser.add_argument("--target-agents", type=int, default=None)
-        run_parser.add_argument("--target-rounds", type=int, default=None)
-        run_parser.add_argument("--require-feed-confirmation", action="store_true")
+            run_parser.add_argument("--profile-overrides-path", default="")
+            run_parser.add_argument("--mirofish-root", default=str(DEFAULT_MIROFISH_ROOT))
         run_parser.add_argument("--simulate", action="store_true")
         run_parser.add_argument("--generate-report", action="store_true")
 
@@ -2275,16 +3280,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_tracked_parser = subparsers.add_parser("run-tracked", help="Run a saved topic through the pipeline")
     add_run_args(run_tracked_parser, tracked=True)
     run_tracked_parser.set_defaults(func=cmd_run_tracked)
-
-    plan_tracked_parser = subparsers.add_parser(
-        "plan-tracked",
-        help="Collect current feeds/market and return feed-quality plus auto/manual simulation plan without running simulation",
-    )
-    plan_tracked_parser.add_argument("topic_id")
-    plan_tracked_parser.add_argument("--simulation-mode", choices=["auto", "manual"], default=None)
-    plan_tracked_parser.add_argument("--target-rounds", type=int, default=None)
-    plan_tracked_parser.add_argument("--target-agents", type=int, default=None)
-    plan_tracked_parser.set_defaults(func=cmd_plan_tracked)
 
     lookup_sim = subparsers.add_parser(
         "lookup-sim",
@@ -2320,6 +3315,63 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--width", type=int, default=DEFAULT_CONSOLE_WIDTH)
     dashboard.add_argument("--json", action="store_true")
     dashboard.set_defaults(func=cmd_dashboard)
+
+    compile_parser = subparsers.add_parser(
+        "compile-artifacts",
+        help="Compile decision, evidence, accountability, and branch artifacts from local PrediHermes runs",
+    )
+    compile_parser.add_argument("--topic-id", default="")
+    compile_parser.add_argument("--mirofish-root", default=str(DEFAULT_MIROFISH_ROOT))
+    compile_parser.set_defaults(func=cmd_compile_artifacts)
+
+    profile_template = subparsers.add_parser(
+        "profile-template",
+        help="Export a clean operator-editable profile manifest from a graph or simulation",
+    )
+    profile_template.add_argument("--graph-id", default="")
+    profile_template.add_argument("--simulation-id", default="")
+    profile_template.add_argument("--entity-type", action="append", default=[])
+    profile_template.add_argument("--mirofish-root", default=str(DEFAULT_MIROFISH_ROOT))
+    profile_template.add_argument("--output", default="")
+    profile_template.set_defaults(func=cmd_profile_template)
+
+    create_branch = subparsers.add_parser(
+        "create-branch",
+        help="Create a counterfactual branch by injecting a new actor into a base simulation",
+    )
+    create_branch.add_argument("--base-simulation-id", required=True)
+    create_branch.add_argument("--actor-name", required=True)
+    create_branch.add_argument("--entity-type", default="StrategicActor")
+    create_branch.add_argument("--profession", default="")
+    create_branch.add_argument("--bio", default="")
+    create_branch.add_argument("--persona", default="")
+    create_branch.add_argument("--country", default="")
+    create_branch.add_argument("--mbti", default="")
+    create_branch.add_argument("--gender", default="")
+    create_branch.add_argument("--stance", default="")
+    create_branch.add_argument("--interested-topic", action="append", default=[])
+    create_branch.add_argument("--opening-statement", default="")
+    create_branch.add_argument("--injection-round", type=int, default=0)
+    create_branch.add_argument("--activity-level", type=float, default=None)
+    create_branch.add_argument("--influence-weight", type=float, default=None)
+    create_branch.add_argument("--posts-per-hour", type=float, default=None)
+    create_branch.add_argument("--comments-per-hour", type=float, default=None)
+    create_branch.add_argument("--start", action="store_true")
+    create_branch.add_argument("--wait", action="store_true")
+    create_branch.add_argument("--platform", choices=["twitter", "reddit", "parallel"], default=DEFAULT_PLATFORM)
+    create_branch.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
+    create_branch.add_argument("--enable-graph-memory-update", action="store_true")
+    create_branch.add_argument("--mirofish-base-url", default=DEFAULT_MIROFISH_BASE)
+    create_branch.set_defaults(func=cmd_create_branch)
+
+    tui = subparsers.add_parser(
+        "tui",
+        help="Compile artifacts and open the Rust local workbench",
+    )
+    tui.add_argument("--topic-id", default="")
+    tui.add_argument("--mirofish-root", default=str(DEFAULT_MIROFISH_ROOT))
+    tui.add_argument("--debug-build", action="store_true")
+    tui.set_defaults(func=cmd_tui)
 
     command_catalog = subparsers.add_parser(
         "command-catalog",

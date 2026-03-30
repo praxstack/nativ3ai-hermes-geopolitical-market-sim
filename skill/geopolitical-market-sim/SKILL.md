@@ -9,17 +9,6 @@ PrediHermes is the public name of the `geopolitical-market-sim` skill.
 
 Use this skill for the local WorldOSINT -> Polymarket -> MiroFish workflow.
 
-Installation awareness:
-- If the operator asks for the fully local CLI edition, prefer:
-  - `prediup install`
-  - or `./install.sh --bootstrap-local`
-- The fully local edition means:
-  - Ollama-backed MiroFish
-  - `GRAPH_BACKEND=local`
-  - WorldOSINT headless only
-  - MiroFish backend only
-  - no Zep and no MiroFish UI required
-
 Helper script path:
 `~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py`
 
@@ -27,14 +16,6 @@ Command policy:
 - Prefer `predihermes <command> ...` if available on PATH.
 - Fallback to `python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py <command> ...`.
 - Do not stop after one failed shorthand attempt; retry with the full script path.
-- If the local stack was bootstrapped, also prefer these helper launchers when you need services:
-  - `~/predihermes/bin/predihermes-local-up`
-  - `~/predihermes/bin/predihermes-local-status`
-  - `~/predihermes/bin/predihermes-local-health`
-  - `~/predihermes/bin/predihermes-stack-up`
-  - `~/predihermes/bin/predihermes-stack-status`
-  - `~/predihermes/bin/predihermes-stack-health`
-  - `~/predihermes/bin/predihermes-stack-down`
 
 ## What it does
 
@@ -43,8 +24,8 @@ Command policy:
 - can attach topic-specific WorldOSINT module sets and module params
 - searches open Polymarket markets, prefers near-deadline contracts, and pulls top-of-book pricing
 - writes a MiroFish-ready seed packet and raw snapshot under `~/.hermes/data/geopolitical-market-sim/runs/...`
+- writes a cleaner `simulation_brief.md` per run for graph construction, so local extraction sees the evidence instead of dashboard metadata
 - optionally drives the full MiroFish API pipeline with moderate defaults
-- supports MiroFish running either with the local SQLite graph backend or the Zep backend; do not assume Zep is present
 
 Treat Iran as an example, not a built-in assumption. This skill is meant for reusable tracked topics.
 
@@ -57,6 +38,10 @@ Use moderate settings unless the user asks otherwise:
 - `enable_graph_memory_update=false`
 - do not generate the MiroFish report unless the user asks
 
+Keep cast generation deterministic and local by default. Do not use Hermes as the per-round actor engine or as the default cast generator. The right split is:
+- local model / rule-based defaults create the cast
+- operator overrides come from a profile manifest when manual steering is needed
+
 ## First checks
 
 Run health before first use or when failures look environmental:
@@ -66,61 +51,8 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 ```
 
 If `MiroFish` is down, do not claim the simulation ran. If `WorldOSINT` is down, do not claim the packet is current.
-If MiroFish uses `GRAPH_BACKEND=local`, that is valid and expected. Only ask for `ZEP_API_KEY` when the operator explicitly chose `GRAPH_BACKEND=zep`.
-
-Backend selection rule:
-- prefer local graph mode unless the user explicitly asks for Zep
-- if the user says they want the cheaper/simpler fully local setup, use `GRAPH_BACKEND=local`
-- if the user says they want no external LLM keys, prefer the local edition with Ollama
-- if Zep returns quota/auth/availability errors, recommend switching MiroFish to `GRAPH_BACKEND=local` and restarting the backend
-- do not block simulation work on missing `ZEP_API_KEY` if local graph mode is available
-- only treat `ZEP_API_KEY` as required when `GRAPH_BACKEND=zep`
-- when the local edition is installed, assume `LLM_API_KEY=ollama` and `LLM_BASE_URL=http://127.0.0.1:11434/v1` unless the operator says otherwise
-
-If health fails because the local services are not running and the helper launchers exist, bring them up with:
-
-```bash
-~/predihermes/bin/predihermes-local-up
-~/predihermes/bin/predihermes-local-status
-~/predihermes/bin/predihermes-local-health
-~/predihermes/bin/predihermes-stack-up
-~/predihermes/bin/predihermes-stack-status
-~/predihermes/bin/predihermes-stack-health
-```
-
-Prefer the `predihermes-local-*` aliases when they exist. They are the simplest path for the local edition.
-
-Use individual launchers only when the user explicitly wants one component started separately:
-
-```bash
-~/predihermes/bin/predihermes-worldosint
-~/predihermes/bin/predihermes-worldosint-ws
-~/predihermes/bin/predihermes-mirofish-backend
-~/predihermes/bin/predihermes-mirofish-ui
-```
-
-The MiroFish UI is optional. Do not require it for local edition installs or counterfactual workflows.
-
-When the user asks you to start or stop the stack from Hermes:
-
-1. run `~/predihermes/bin/predihermes-stack-up` to start required services
-2. run `~/predihermes/bin/predihermes-stack-status` to confirm tracked processes
-3. run `~/predihermes/bin/predihermes-stack-health` to confirm the pipeline can talk to them
-4. only then proceed with topic planning or simulation
-
-If health fails because Zep is unavailable but the MiroFish backend can run locally:
-
-1. inspect `~/predihermes/companions/MiroFish/.env`
-2. if the operator did not explicitly require Zep, set `GRAPH_BACKEND=local`
-3. restart the MiroFish backend
-4. rerun `~/predihermes/bin/predihermes-stack-health`
-5. continue with the pipeline once health passes
-
-When the user asks to stop the local stack:
-
-```bash
-~/predihermes/bin/predihermes-stack-down
-```
+If health shows a local LLM endpoint is reachable, do not invent cloud-provider failures from stale memory or old logs.
+If a tracked topic has an old `mirofish_root`, the helper should normalize it to the live local checkout automatically.
 
 ## Track a topic
 
@@ -136,6 +68,15 @@ If the user does not specify modules, use:
 - `news_rss`
 - `intelligence_risk_scores`
 - `military_usni`
+- `intelligence_findings`
+- `polymarket_intel`
+
+Contract policy:
+- treat the selected primary Polymarket contract as the canonical resolution anchor
+- derive the operative date/deadline from the contract question and resolution description, not just the API close timestamp and not just the user's shorthand
+- if the user's wording says one date but the selected contract resolves on another, do not silently proceed with the mismatch
+- either update the tracked topic so the topic/query matches the selected contract, or tell the operator the contract/date mismatch explicitly
+- never "fix" junk actors by hardcoding ad-hoc banned names; filtering must stay dynamic and anchored to the contract question, description, and topic terms
 
 Generic pattern:
 
@@ -189,6 +130,8 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
   run-tracked iran-conflict
 ```
 
+This is expected to produce a seed-only run. Do not describe a seed-only run as a failed simulation or as an LLM auth problem unless a fresh `health` check or a direct runtime error proves that.
+
 Seed packet plus MiroFish simulation:
 
 ```bash
@@ -197,26 +140,23 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
   --simulate
 ```
 
-Before expensive runs, generate a plan and validate collected feeds:
+If the operator wants to edit or prune the cast before the next run, export a profile manifest from a finished simulation first:
 
 ```bash
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
-  plan-tracked iran-conflict \
-  --target-agents 48
+  profile-template \
+  --simulation-id sim_0e4e0705893c
 ```
 
-The plan output includes:
-- `feed_quality` (`good` / `moderate` / `poor`) with notes
-- `simulation_plan` with selected rounds/profile parallelism and rationale
-
-If the user wants strict safety before simulation, require feed confirmation:
+Then wire that JSON back into the tracked topic:
 
 ```bash
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
-  run-tracked iran-conflict \
-  --simulate \
-  --require-feed-confirmation
+  update-topic iran-conflict \
+  --set-profile-overrides-path /absolute/path/to/profile-manifest.json
 ```
+
+The manifest is operator-editable. Use it to disable weak actors or rewrite `entity_type`, `name`, `user_name`, `persona`, `bio`, and related profile fields before the next run.
 
 ## Manage tracked topics
 
@@ -248,32 +188,18 @@ Useful modular flags:
 - `--set-headless-module <module>` (repeatable): replace module set
 - `--add-headless-module <module>` and `--remove-headless-module <module>`
 - shorthand aliases also work: `--set-module`, `--add-module`, `--remove-module`
+- `--set-topic <text>` and `--set-market-query <text>`: realign the tracked topic to the actual contract being targeted
+- `--set-keyword <term>`, `--add-keyword <term>`, `--remove-keyword <term>`
+- `--add-region-code <code>`, `--remove-region-code <code>`
 - `--set-module-param 'module.key=value'`
 - `--remove-module-param module.key` or `--remove-module-param module`
 - `--set-platform twitter|reddit|parallel`
 - `--set-max-rounds <n>`
-- `--set-simulation-mode auto|manual`
-- `--set-target-agents <n>` (agent-count hint used for planning profile depth)
-
-Per-run overrides:
-- `--simulation-mode auto|manual`
-- `--target-rounds <n>`
-- `--target-agents <n>`
-- `--require-feed-confirmation`
+- `--set-profile-overrides-path /absolute/path/to/profile-manifest.json`
 
 Natural Hermes ask patterns for module control:
-- "Use PrediHermes and start the local stack, then tell me if WorldOSINT and MiroFish are healthy."
 - "Use PrediHermes list-worldosint-modules and propose the best modules for Hormuz risk."
 - "Use PrediHermes update-topic iran-conflict and add <module>, remove <module>, then show dashboard."
-- "Use PrediHermes plan-tracked iran-conflict and confirm if feed quality is good enough."
-- "Use PrediHermes run-tracked iran-conflict in manual mode with 36 rounds and 60 target agents."
-
-Simulation planning behavior:
-- If user gives explicit rounds/agents, run in manual mode and follow those values.
-- If user asks the agent to decide, use auto mode with feed quality.
-- If user gives neither, ask concise clarifiers:
-  - auto vs manual mode
-  - optional rounds and/or agent-count target
 
 ## How to use the output
 
@@ -281,6 +207,8 @@ After a run:
 - read `run_summary.md`
 - if simulation ran, read `simulation_summary.md`
 - use the selected primary contract question and description as the resolution anchor
+- prefer the contract's own resolution date wording over loose topic labels or stale API close timestamps
+- if the selected contract date conflicts with the topic label, say that plainly and normalize the topic before treating future runs as comparable
 - separate these clearly in your answer:
   - current market price / bid-ask
 - simulation-derived directional view
@@ -297,7 +225,43 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 This dashboard shows:
 - primary market bid/ask/deadline
 - OSINT signal counts (headlines, theme, risk summary, modules)
+- curated intelligence findings and matched Polymarket flow
 - simulation status/action totals when simulation artifacts exist
+- decision call, confidence, and top alerts from the compiled artifact layer
+
+PrediHermes also exposes a Rust local workbench so operators can browse topics, runs, evidence, alerts, accountability, and branch summaries without the web frontend:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  tui \
+  --topic-id iran-conflict
+```
+
+The `tui` command will compile the latest artifacts first, then launch the local workbench.
+It now includes:
+- a large ASCII `PREDIHERMES` boot header
+- a short loading sequence before the control room comes online
+- dedicated panes for Topics, Runs, Branches, and Details
+- lightweight live motion in the header and signal bars so focus and status stay visible in the terminal
+
+Useful TUI controls:
+- `1` / `2` / `3` / `4` / `5`: jump focus to Topics, Runs, Branches, Tabs, or Detail
+- `Tab`: cycle focus across panes
+- `j` / `k`: move inside the active pane
+- `h` / `l`: change detail tab
+- `Enter`: from Branches, open the selected branch detail directly
+- `c`: print a ready-to-run `create-branch` command template into the footer based on the selected run
+- `?`: toggle the help overlay
+- `r`: reload compiled artifacts
+- `q`: quit
+
+If the user wants a non-interactive refresh without opening the workbench:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  compile-artifacts \
+  --topic-id iran-conflict
+```
 
 To show command awareness/help for users inside Hermes:
 
@@ -305,9 +269,51 @@ To show command awareness/help for users inside Hermes:
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py command-catalog
 ```
 
+If the operator wants to create a new counterfactual branch without touching the web UI, use:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  create-branch \
+  --base-simulation-id sim_19463d1a091e \
+  --actor-name "Swiss backchannel envoy" \
+  --entity-type Diplomat \
+  --profession Diplomat \
+  --country Switzerland \
+  --persona "Quiet mediator pushing phased verification and face-saving sequencing." \
+  --bio "Backchannel envoy with access to both US and Iranian negotiators." \
+  --interested-topic Diplomacy \
+  --interested-topic Verification \
+  --injection-round 8 \
+  --opening-statement "Swiss channel indicates a verification-first formula could still bridge the deadline gap."
+```
+
+Use `--start` if the user wants the branch launched immediately after creation. Use `--wait` only when they explicitly want the command to block for branch startup confirmation.
+
 When responding in Hermes, if a user asks “what can PrediHermes do next?”, use `command-catalog` and then suggest 1-2 relevant next commands.
 
 Do not invent exact resolution criteria if the market description is vague. Say when the market page needs manual verification.
+
+## Local model path
+
+PrediHermes stays local-first, but the MiroFish simulation backend uses whatever OpenAI-compatible model endpoint the backend is configured to call through:
+- `LLM_BASE_URL`
+- `LLM_MODEL_NAME`
+- `LLM_API_KEY`
+
+That means the operator can keep the full loop local by pointing MiroFish at a local OpenAI-compatible runtime such as Ollama, LM Studio, or vLLM. If the environment still points to a cloud endpoint, say that explicitly instead of implying the run stayed local.
+
+Current repo default:
+- `LLM_BASE_URL=http://127.0.0.1:11434/v1`
+- `LLM_MODEL_NAME=qwen2.5:7b`
+- `LLM_API_KEY=ollama`
+- `LOCAL_GRAPH_EXTRACTION_MODE=fast`
+- `LOCAL_SIMULATION_PROFILE=lean`
+- `LOCAL_SIM_MAX_AGENTS=48`
+- `LOCAL_SIM_MAX_ROUNDS=16`
+- `LOCAL_LLM_REQUEST_TIMEOUT_SECONDS=900`
+- `LOCAL_LLM_MAX_TOKENS=192`
+
+If `GRAPH_BACKEND=local`, PrediHermes should stay on the local graph path even when a legacy `ZEP_API_KEY` is still present in the env. Do not blame Zep quota in that case unless a direct runtime error proves the backend is still hitting Zep.
 
 ## Simulation and actor retrieval
 
@@ -354,7 +360,7 @@ Recommended workflow for simulation questions:
 
 ## Counterfactual actor injection
 
-If the user wants to test how a new actor would change a past simulation, use the MiroFish backend headlessly. Do not require the UI.
+If the user wants to test how a new actor would change a past simulation, use the PrediHermes helper first. Do not require the UI.
 
 Prerequisites:
 - MiroFish backend must be running on `MIROFISH_BASE_URL` and should expose `POST /api/simulation/<base_simulation_id>/counterfactual`
@@ -362,9 +368,9 @@ Prerequisites:
 
 Workflow:
 1. choose the historical `simulation_id`
-2. create a counterfactual branch by posting actor data plus `injection_round`
+2. create a counterfactual branch with `create-branch`
 3. read the returned branch `simulation_id`
-4. start the new branch with the normal `/api/simulation/start` call
+4. if needed, start the new branch with `--start` or the normal `/api/simulation/start` call
 5. poll `run-status`, `run-status/detail`, `timeline`, and `actions` like any other simulation
 
 Recommended use:
@@ -372,7 +378,27 @@ Recommended use:
 - choose the injection round from a historically important or high-action round
 - provide an `opening_statement` only if the user explicitly wants the actor to announce itself at insertion time
 
-Example branch creation:
+Preferred branch creation path:
+
+```bash
+python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py \
+  create-branch \
+  --base-simulation-id <base_simulation_id> \
+  --actor-name "Swiss backchannel envoy" \
+  --entity-type Diplomat \
+  --profession Diplomat \
+  --country Switzerland \
+  --stance mediator \
+  --bio "Quiet envoy coordinating verification-first diplomacy." \
+  --persona "Prioritizes de-escalation, inspection sequencing, and face-saving language for both sides." \
+  --interested-topic "backchannel diplomacy" \
+  --interested-topic "IAEA inspections" \
+  --interested-topic "sanctions relief" \
+  --injection-round 12 \
+  --opening-statement "Swiss channel update: verification-first sequencing is the only viable path."
+```
+
+Direct API fallback if the helper is unavailable:
 
 ```bash
 curl -X POST http://127.0.0.1:5001/api/simulation/<base_simulation_id>/counterfactual \

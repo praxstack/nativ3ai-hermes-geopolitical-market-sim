@@ -19,6 +19,15 @@ PrediHermes is a Hermes skill for geopolitical market forecasting. It wires toge
 - MiroFish for multi-agent simulation and counterfactual branches
 - Hermes chat and cron for operator workflows
 
+Current local-first release surface:
+
+- `skill/geopolitical-market-sim/SKILL.md`
+- `skill/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py`
+- `skill/geopolitical-market-sim/tools/predihermes/review.py`
+- `skill/geopolitical-market-sim/tools/predihermes_tui/`
+
+That means the published skill now includes the operator CLI, artifact compiler, and Rust TUI workbench that were previously only available in the installed local copy.
+
 ## What It Does
 
 PrediHermes is not a fixed Iran-only pipeline. The core workflow is topic-modular:
@@ -50,6 +59,12 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket discovery -> seed pack
 - Optional universal transcriber add-on: https://github.com/nativ3ai/universal-video-transcriber
 
 This repo is the Hermes skill and bootstrap layer. The WorldOSINT and MiroFish repos remain separate companions.
+
+Companion baseline for this release:
+
+- `hermes-geopolitical-market-sim`: current local-first skill release
+- `MiroFish`: `v0.2.0` release line with PrediHermes operator tooling, local graph mode, profile manifests, and branch workbench support
+- `worldosint-headless`: current `main` baseline, unchanged by this release
 
 ## Prerequisites
 

@@ -1,0 +1,1 @@
+/Users/native/Downloads/hermes-geopolitical-market-sim/skill/geopolitical-market-sim/tools/predihermes_tui/target/release/predihermes-tui: /Users/native/Downloads/hermes-geopolitical-market-sim/skill/geopolitical-market-sim/tools/predihermes_tui/src/main.rs
