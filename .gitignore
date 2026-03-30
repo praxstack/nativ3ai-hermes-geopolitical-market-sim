@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 state/
 runs/
+target/
+skill/geopolitical-market-sim/tools/predihermes_tui/target/
