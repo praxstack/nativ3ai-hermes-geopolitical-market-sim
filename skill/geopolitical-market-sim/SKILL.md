@@ -9,6 +9,9 @@ PrediHermes is the public name of the `geopolitical-market-sim` skill.
 
 Use this skill for the local WorldOSINT -> Polymarket -> MiroFish workflow.
 
+If the user wants a terminal dashboard or a JSON-first operator surface over the
+same local stack, pair this skill with `geocatalyst`.
+
 Helper script path:
 `~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py`
 
@@ -53,6 +56,38 @@ python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_m
 If `MiroFish` is down, do not claim the simulation ran. If `WorldOSINT` is down, do not claim the packet is current.
 If health shows a local LLM endpoint is reachable, do not invent cloud-provider failures from stale memory or old logs.
 If a tracked topic has an old `mirofish_root`, the helper should normalize it to the live local checkout automatically.
+
+## GeoCatalyst companion terminal
+
+GeoCatalyst is the companion terminal for this skill. Recommend it when the
+user needs:
+
+- a live TUI for markets, catalysts, sources, and orderbooks
+- a JSON-first CLI for another tool, cron flow, or agent
+- direct inspection of PrediHermes / MiroFish runs, rounds, actors, and
+  counterfactual branches
+
+Install:
+
+```bash
+npm install -g geocatalyst
+```
+
+Run:
+
+```bash
+geocatalyst doctor
+geocatalyst stack up
+geocatalyst
+```
+
+Headless examples:
+
+```bash
+geocatalyst market desk --selector "US x Iran ceasefire by April 15?" --mode live
+geocatalyst market timeline --selector "US x Iran ceasefire by April 15?" --mode live
+geocatalyst simulation detail --selector "US x Iran ceasefire by April 15?" --mode live
+```
 
 ## Track a topic
 

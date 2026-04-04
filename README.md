@@ -56,6 +56,7 @@ WorldOSINT headless -> PrediHermes pipeline -> Polymarket discovery -> seed pack
 - WorldOSINT headless: https://github.com/nativ3ai/worldosint-headless
 - MiroFish fork used for this workflow: https://github.com/nativ3ai/MiroFish
 - PrediHermes local installer: https://github.com/nativ3ai/prediup
+- GeoCatalyst terminal companion: https://github.com/nativ3ai/geocatalyst
 - Optional universal transcriber add-on: https://github.com/nativ3ai/universal-video-transcriber
 
 This repo is the Hermes skill and bootstrap layer. The WorldOSINT and MiroFish repos remain separate companions.
@@ -391,6 +392,38 @@ Direct skill path also works:
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py health
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py list-worldosint-modules
 python3 ~/.hermes/skills/research/geopolitical-market-sim/scripts/geopolitical_market_pipeline.py command-catalog
+```
+
+## Optional GeoCatalyst Terminal
+
+GeoCatalyst is the companion operator terminal for this stack. Use it when you
+want a live TUI or JSON-first CLI over:
+
+- Polymarket markets and focused WS orderbooks
+- catalyst timelines and source drilldown
+- PrediHermes / MiroFish simulation artifacts
+- alerting, watchlists, pins, and what-if flows
+
+Install it globally:
+
+```bash
+npm install -g geocatalyst
+```
+
+Then verify and launch:
+
+```bash
+geocatalyst doctor
+geocatalyst stack up
+geocatalyst
+```
+
+Useful headless examples:
+
+```bash
+geocatalyst market desk --selector "US x Iran ceasefire by April 15?" --mode live
+geocatalyst market timeline --selector "US x Iran ceasefire by April 15?" --mode live
+geocatalyst simulation detail --selector "US x Iran ceasefire by April 15?" --mode live
 ```
 
 ## Core CLI Flow

@@ -968,6 +968,11 @@ require_base_tools
 require_hermes
 install_skill
 write_helper_launchers
+say "Optional companion terminal:"
+say "  npm install -g geocatalyst"
+say "  geocatalyst doctor"
+say "  geocatalyst stack up"
+say "  geocatalyst"
 
 if [[ "$BOOTSTRAP_STACK" -eq 1 ]]; then
   install_worldosint
